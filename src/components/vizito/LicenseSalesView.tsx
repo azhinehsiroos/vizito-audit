@@ -24,6 +24,7 @@ import { toast } from "@/hooks/use-toast";
 import {
   Gem,
   ShieldCheck,
+  ShieldAlert,
   Tags,
   Copy,
   RefreshCw,
@@ -41,7 +42,7 @@ import {
   CalendarDays,
 } from "lucide-react";
 
-type DurationKey = "m1" | "m3" | "m6" | "y1";
+type DurationKey = "m1" | "m3" | "m6" | "y1" | "perm";
 
 /** نمایش قیمت آزاد: اگر عدد باشد با جداکننده هزارگان و تومان، وگرنه همان متن */
 function salePriceText(raw: string | null): string | null {
@@ -52,7 +53,14 @@ function salePriceText(raw: string | null): string | null {
   return toFa(s);
 }
 
-function daysLeftBadge(daysLeft: number) {
+function daysLeftBadge(daysLeft: number | null) {
+  // لایسنس دائمی — خارج از چرخه انقضا
+  if (daysLeft === null)
+    return (
+      <Badge className="text-[9px] border-0 bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+        دائمی ✨
+      </Badge>
+    );
   if (daysLeft <= 0)
     return <Badge className="text-[9px] border-0 bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">منقضی شده</Badge>;
   if (daysLeft <= 7)
@@ -62,6 +70,24 @@ function daysLeftBadge(daysLeft: number) {
   return (
     <Badge className="text-[9px] border-0 bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
       {toFa(daysLeft)} روز مانده
+    </Badge>
+  );
+}
+
+/** نشان وضعیت چرخه حیات — مهلت تمدید ۳۰ روزه / آستانه حذف (طبق ساعت سرور) */
+function lifecycleBadge(daysLeft: number | null) {
+  if (daysLeft === null) return null; // دائمی — خارج از چرخه
+  if (daysLeft > 0) return null; // فعال — نشان روزها کافی است
+  const overdue = -daysLeft; // روزهای گذشته از انقضا
+  if (overdue < 30)
+    return (
+      <Badge className="text-[9px] border-0 bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+        در مهلت تمدید — {toFa(30 - overdue)} روز مانده
+      </Badge>
+    );
+  return (
+    <Badge className="text-[9px] border-0 bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
+      پایان مهلت — در آستانه حذف
     </Badge>
   );
 }
@@ -115,6 +141,7 @@ function SalesList() {
   }, [loadSales]);
 
   const resolveDays = () => {
+    if (durationKey === "perm") return 0; // دائمی — پرداخت یک‌باره
     if (durationKey !== "custom") return Number(durationKey);
     const n = Number(toEnDigits(customDays).trim());
     return Number.isFinite(n) ? Math.round(n) : 0;
@@ -139,8 +166,8 @@ function SalesList() {
       return;
     }
     const days = resolveDays();
-    if (days < 1 || days > 3650) {
-      toast({ title: "خطا", description: "مدت لایسنس باید بین ۱ تا ۳۶۵۰ روز باشد", variant: "destructive" });
+    if (durationKey === "perm" ? false : days < 1 || days > 3650) {
+      toast({ title: "خطا", description: "مدت لایسنس باید بین ۱ تا ۳۶۵۰ روز باشد (یا گزینه دائمی)", variant: "destructive" });
       return;
     }
     setIssuing(true);
@@ -227,6 +254,7 @@ function SalesList() {
                       <SelectItem value="90">۳ ماهه</SelectItem>
                       <SelectItem value="180">۶ ماهه</SelectItem>
                       <SelectItem value="365">۱ ساله</SelectItem>
+                      <SelectItem value="perm">دائمی (پرداخت یک‌باره)</SelectItem>
                       <SelectItem value="custom">سفارشی (روز)</SelectItem>
                     </SelectContent>
                   </Select>
@@ -318,6 +346,10 @@ function SalesList() {
                         {s.durationLabel}
                       </Badge>
                       {daysLeftBadge(s.daysLeft)}
+                      {lifecycleBadge(s.daysLeft)}
+                      {s.pauseDeletion && (
+                        <Badge variant="outline" className="text-[9px]">حذف متوقف</Badge>
+                      )}
                     </div>
                     <div className="text-[10px] text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
                       <span dir="ltr" className="flex items-center gap-1">
@@ -410,6 +442,27 @@ function SaleProfile({ saleId }: { saleId: string }) {
     }
   };
 
+  // توقف/ادامه حذف خودکار (مهلت ۳۰ روزه) — فقط اثر روی رکورد دفتر فروش
+  const togglePauseDeletion = async () => {
+    if (!sale) return;
+    try {
+      const res = await api<{ sale: LicenseSale }>(`/api/license/sales/${saleId}`, {
+        method: "PATCH",
+        body: { pauseDeletion: !sale.pauseDeletion },
+      });
+      setSale((prev) => (prev ? { ...res.sale, charges: prev.charges } : res.sale));
+      toast({
+        title: res.sale.pauseDeletion ? "حذف خودکار متوقف شد ✅" : "حذف خودکار ادامه می‌یابد",
+        description: res.sale.pauseDeletion
+          ? "پس از پایان مهلت، داده‌های این مشتری حذف نمی‌شوند"
+          : "پس از پایان مهلت ۳۰ روزه، حذف کنترل‌شده اجرا می‌شود",
+      });
+      void load();
+    } catch (e) {
+      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+    }
+  };
+
   const removeSale = async () => {
     if (!sale) return;
     if (!confirm(`فروش لایسنس «${sale.buyerName}» حذف شود؟\nاگر این کلید فعال شده باشد، برنامه خریدار قفل می‌شود.`)) return;
@@ -454,6 +507,10 @@ function SaleProfile({ saleId }: { saleId: string }) {
                 {sale.durationLabel}
               </Badge>
               {daysLeftBadge(sale.daysLeft)}
+              {lifecycleBadge(sale.daysLeft)}
+              {sale.pauseDeletion && (
+                <Badge variant="outline" className="text-[9px]">حذف متوقف</Badge>
+              )}
             </div>
           </div>
           <Separator />
@@ -472,7 +529,9 @@ function SaleProfile({ saleId }: { saleId: string }) {
             </div>
             <div className="flex items-center justify-between gap-2 col-span-2 sm:col-span-1">
               <span className="text-muted-foreground text-[10px]">انقضای لایسنس</span>
-              <span className="font-bold text-primary">{formatJalali(sale.expiresAt)}</span>
+              <span className="font-bold text-primary">
+                {sale.expiresAt ? formatJalali(sale.expiresAt) : "دائمی — بدون انقضا"}
+              </span>
             </div>
           </div>
 
@@ -501,8 +560,23 @@ function SaleProfile({ saleId }: { saleId: string }) {
 
           {/* اکشن‌ها */}
           <div className="flex gap-1.5 pt-1">
-            <Button size="sm" className="flex-1" onClick={() => setRechargeOpen((v) => !v)}>
-              <BatteryCharging className="h-4 w-4" /> شارژ مجدد
+            {sale.durationDays === 0 ? (
+              <Button size="sm" className="flex-1" variant="secondary" disabled>
+                <BatteryCharging className="h-4 w-4" /> لایسنس دائمی — بدون نیاز به شارژ
+              </Button>
+            ) : (
+              <Button size="sm" className="flex-1" onClick={() => setRechargeOpen((v) => !v)}>
+                <BatteryCharging className="h-4 w-4" /> شارژ مجدد
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={sale.pauseDeletion ? "secondary" : "ghost"}
+              onClick={togglePauseDeletion}
+              aria-label={sale.pauseDeletion ? "ادامه حذف خودکار" : "توقف حذف خودکار"}
+            >
+              {sale.pauseDeletion ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+              {sale.pauseDeletion ? "ادامه حذف خودکار" : "توقف حذف خودکار"}
             </Button>
             <Button size="sm" variant="ghost" className="text-destructive" onClick={removeSale} aria-label="حذف فروش">
               <Trash2 className="h-4 w-4" /> حذف
@@ -595,7 +669,7 @@ function SaleProfile({ saleId }: { saleId: string }) {
 
 function PricingSettingsCard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [prices, setPrices] = useState<Record<DurationKey, string>>({ m1: "", m3: "", m6: "", y1: "" });
+  const [prices, setPrices] = useState<Record<DurationKey, string>>({ m1: "", m3: "", m6: "", y1: "", perm: "" });
   const [telegram, setTelegram] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -603,7 +677,14 @@ function PricingSettingsCard() {
     fetch("/api/license/pricing", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
-        if (d && d.prices) setPrices({ m1: d.prices.m1 ?? "", m3: d.prices.m3 ?? "", m6: d.prices.m6 ?? "", y1: d.prices.y1 ?? "" });
+        if (d && d.prices)
+          setPrices({
+            m1: d.prices.m1 ?? "",
+            m3: d.prices.m3 ?? "",
+            m6: d.prices.m6 ?? "",
+            y1: d.prices.y1 ?? "",
+            perm: d.prices.perm ?? "",
+          });
         if (d && typeof d.telegram === "string") setTelegram(d.telegram);
       })
       .catch(() => {});
@@ -615,7 +696,13 @@ function PricingSettingsCard() {
       const res = await api<{ ok: boolean; prices: Record<DurationKey, string>; telegram: string }>("/api/license/settings", {
         method: "PUT",
         body: {
-          prices: { m1: prices.m1.trim(), m3: prices.m3.trim(), m6: prices.m6.trim(), y1: prices.y1.trim() },
+          prices: {
+            m1: prices.m1.trim(),
+            m3: prices.m3.trim(),
+            m6: prices.m6.trim(),
+            y1: prices.y1.trim(),
+            perm: prices.perm.trim(),
+          },
           telegram: telegram.trim().replace(/^@/, ""),
         },
       });
@@ -679,6 +766,16 @@ function PricingSettingsCard() {
                   value={prices.y1}
                   onChange={(e) => setPrices({ ...prices, y1: e.target.value })}
                   placeholder="مثلاً 1800000"
+                  className="h-9 text-[12px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">دائمی</Label>
+                <Input
+                  inputMode="numeric"
+                  value={prices.perm}
+                  onChange={(e) => setPrices({ ...prices, perm: e.target.value })}
+                  placeholder="مثلاً 5000000"
                   className="h-9 text-[12px]"
                 />
               </div>

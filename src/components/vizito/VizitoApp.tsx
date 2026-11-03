@@ -14,6 +14,8 @@ import { OrderDetail } from "@/components/vizito/OrderDetail";
 import { ReportsView } from "@/components/vizito/ReportsView";
 import { CatalogView } from "@/components/vizito/CatalogView";
 import { UsersView } from "@/components/vizito/UsersView";
+import { MessagesView } from "@/components/vizito/MessagesView";
+import { OwnerMessagesView } from "@/components/vizito/OwnerMessagesView";
 import { SettingsView } from "@/components/vizito/SettingsView";
 import { BackupView } from "@/components/vizito/BackupView";
 import { LicenseSalesView } from "@/components/vizito/LicenseSalesView";
@@ -50,10 +52,10 @@ export function VizitoApp() {
   }, [meId, loadLicense]);
 
   useEffect(() => {
-    // بوت اصلی وقتی انجام می‌شود که لایسنس معتبر باشد «یا نصب تازه باشد» —
-    // روی نصب تازه (بدون هیچ حسابی) بک‌اند ثبت‌نام اولین مدیر را بدون لایسنس مجاز می‌داند
-    // (با SETUP_TOKEN + تریال ۲۴ ساعته) پس باید صفحه ورود/ثبت‌نام دیده شود نه قفل لایسنس
-    if (!license || (!license.valid && !license.freshInstall)) return;
+    // بوت اصلی — همیشه اجرا می‌شود تا حتی در قفل لایسنس هم وضعیت کاربر مشخص شود:
+    //  - کاربر بدون قفل (پرسنل در پایان ترِیال / مالک) وارد اپ می‌شود
+    //  - کاربر قفل‌شده (مدیر در مهلت تمدید) صفحه وضعیت لایسنس را می‌بیند
+    if (!license) return;
     const boot = async () => {
       // تنظیمات برند (لوگو) — عمومی و بدون نیاز به ورود
       try {
@@ -65,11 +67,13 @@ export function VizitoApp() {
       // احراز هویت با کوکی HttpOnly — همیشه سمت سرور چک می‌شود (۴۰۱ ⇒ صفحه ورود)
       try {
         const res = await api<{
-          user: { id: string; mobile: string; name: string; company: string | null; role: string };
+          user: { id: string; mobile: string; name: string; company: string | null; role: string; kind: string };
           sections: string[];
           grantExpiresAt: string | null;
           isAdmin: boolean;
           isOwner?: boolean;
+          licenseLocked?: boolean;
+          trialUntil?: string | null;
         }>("/api/auth/me");
         setMe({
           id: res.user.id,
@@ -81,6 +85,9 @@ export function VizitoApp() {
           grantExpiresAt: res.grantExpiresAt,
           isAdmin: res.isAdmin,
           isOwner: !!res.isOwner,
+          kind: res.user.kind,
+          licenseLocked: !!res.licenseLocked,
+          trialUntil: res.trialUntil ?? null,
         });
       } catch {
         // توکن نامعتبر است
@@ -102,9 +109,12 @@ export function VizitoApp() {
     );
   }
 
-  // قفل لایسنس — کل اپ پشت این صفحه است (داده‌ها محفوظ می‌مانند)
-  // استثنا: نصب تازه — چون ثبت‌نام اولین مدیر هنوز انجام نشده و بک‌اند آن را بدون لایسنس مجاز می‌داند
-  if (license && !license.valid && !license.freshInstall) {
+  // قفل لایسنس — تصمیم سمت سرور (licenseLocked از /api/auth/me):
+  //  - کاربر واردشده با معافیت (پرسنل در پایان ترِیال / مالک) وارد اپ می‌شود
+  //  - بقیه (بازدیدکننده، مدیر قفل‌شده در مهلت تمدید) صفحه وضعیت لایسنس را می‌بینند
+  //  - نصب تازه — صفحه ورود/ثبت‌نام (بک‌اند ثبت‌نام اولین مدیر را مجاز می‌داند)
+  const userLocked = me ? !!me.licenseLocked : true;
+  if (license && !license.valid && !license.freshInstall && (authLoading || userLocked)) {
     return <LicenseScreen state={license} onActivated={() => void loadLicense()} />;
   }
 
@@ -169,6 +179,12 @@ export function VizitoApp() {
         return <CatalogView />;
       case "users":
         return <UsersView />;
+      case "messages":
+        // صندوق پیام — همه کاربران واردشده (سرور هم مستقل فیلتر می‌کند)
+        return <MessagesView />;
+      case "owner-messages":
+        // پیام‌ها و اطلاع‌رسانی — فقط سازنده برنامه (سرور هم مستقل محافظت می‌کند)
+        return me.isOwner ? <OwnerMessagesView /> : <Dashboard />;
       case "backup":
         // پشتیبان‌گیری فقط مدیر — محافظت کلاینت (سرور هم مستقل بررسی می‌کند)
         return me.isAdmin ? <BackupView /> : <Dashboard />;

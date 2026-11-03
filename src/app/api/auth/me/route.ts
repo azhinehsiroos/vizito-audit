@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getAuth, unauthorized, csrfGate } from "@/lib/auth";
+import { getAuth, unauthorized, csrfGate, isUserLicenseLocked } from "@/lib/auth";
 import { isOwnerMobile } from "@/lib/license";
 import { strField } from "@/lib/validate";
 
@@ -8,7 +8,9 @@ export async function GET(req: NextRequest) {
   const ctx = await getAuth(req);
   if (!ctx) return unauthorized();
   // سازنده برنامه — فقط برای نمایش بخش «فروش لایسنس» در منو
-  return Response.json({ ...ctx, isOwner: ctx.isAdmin && isOwnerMobile(ctx.user.mobile) });
+  // licenseLocked: آیا «این کاربر» با قفل لایسنس مواجه است؟ (مالک/پرسنل معاف از قفل ترِیال)
+  const licenseLocked = await isUserLicenseLocked(ctx);
+  return Response.json({ ...ctx, isOwner: ctx.isAdmin && isOwnerMobile(ctx.user.mobile), licenseLocked });
 }
 
 /** ویرایش پروفایل خود کاربر (نام / نام شرکت) — هر کاربر فقط پروفایل خودش */

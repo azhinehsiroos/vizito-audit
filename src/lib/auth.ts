@@ -2,7 +2,11 @@ import { NextRequest } from "next/server";
 import crypto from "crypto";
 import { promisify } from "util";
 import { db } from "@/lib/db";
-import { isLicenseValid, licenseLockedResponse } from "@/lib/license";
+import {
+  isLicenseValid,
+  licenseLockPhase,
+  licenseLockedResponseDetailed,
+} from "@/lib/license";
 
 /**
  * سیستم توکن مبتنی بر نشست سمت سرور:
@@ -100,10 +104,13 @@ export type AuthContext = {
     name: string;
     company: string | null;
     role: string;
+    kind: string; // STAFF (پرسنل مدیر) | PUBLIC (کاربر عمومی)
   };
   sections: string[]; // دسترسی‌های فعال
-  grantExpiresAt: string | null;
+  grantExpiresAt: string | null; // null در گرنت دائمی یا مدیر
   isAdmin: boolean;
+  /** ترِیال شخصی فعال کاربر عمومی — برای نمایش شمارش معکوس در UI */
+  trialUntil?: string | null;
 };
 
 /** نام کوکی نشست — HttpOnly یعنی جاوااسکریپت (و XSS) به توکن دسترسی ندارد */
@@ -162,6 +169,9 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
     include: { grants: { orderBy: { createdAt: "desc" } } },
   });
   if (!user) return null;
+  // حساب غیرفعال — همه نشست‌ها عملاً بی‌اعتبار می‌شوند (سیاست سمت سرور، نه فقط UI)
+  if (user.disabled) return null;
+  const kind = user.kind || "STAFF";
   if (user.role === "ADMIN") {
     return {
       user: {
@@ -170,16 +180,35 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
         name: user.name,
         company: user.company,
         role: user.role,
+        kind,
       },
       sections: ALL_SECTIONS,
       grantExpiresAt: null,
       isAdmin: true,
     };
   }
-  // کاربر عادی: جدیدترین گرنت معتبر
   const now = new Date();
-  const validGrants = user.grants.filter((g) => g.expiresAt > now);
+  // گرنت دائمی (expiresAt = null) همیشه معتبر است — سقف ۵/۱۰ ساله حذف شد
+  const validGrants = user.grants.filter((g) => g.expiresAt === null || g.expiresAt > now);
   if (validGrants.length === 0) {
+    // ترِیال شخصی ۲۴ ساعته کاربر عمومی — دسترسی کامل (به‌جز مدیریت کاربران)
+    // فقط یک‌بار هنگام ثبت‌نام نوشته می‌شود؛ با ساخت حساب جدید قابل تکرار توسط همان شماره نیست
+    if (kind === "PUBLIC" && user.trialUntil && user.trialUntil > now) {
+      return {
+        user: {
+          id: user.id,
+          mobile: user.mobile,
+          name: user.name,
+          company: user.company,
+          role: user.role,
+          kind,
+        },
+        sections: ALL_SECTIONS.filter((s) => s !== "users"),
+        grantExpiresAt: user.trialUntil.toISOString(),
+        isAdmin: false,
+        trialUntil: user.trialUntil.toISOString(),
+      };
+    }
     return {
       user: {
         id: user.id,
@@ -187,6 +216,7 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
         name: user.name,
         company: user.company,
         role: user.role,
+        kind,
       },
       sections: [],
       grantExpiresAt: null,
@@ -207,9 +237,10 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
       name: user.name,
       company: user.company,
       role: user.role,
+      kind,
     },
     sections,
-    grantExpiresAt: grant.expiresAt.toISOString(),
+    grantExpiresAt: grant.expiresAt ? grant.expiresAt.toISOString() : null,
     isAdmin: false,
   };
 }
@@ -403,10 +434,27 @@ export async function requireAuth(
   if (csrf) return { error: csrf };
   const ctx = await getAuth(req);
   if (!ctx) return { error: unauthorized() };
-  // قفل لایسنس: بدون لایسنس فعال/معتبر هیچ API احراز هویت‌شده‌ای کار نمی‌کند (داده‌ها حذف نمی‌شوند)
-  if (!(await isLicenseValid())) return { error: licenseLockedResponse() };
+  // قفل لایسنس (402) با تفکیک فاز:
+  //  - حساب مالک هیچ‌وقت قفل نمی‌شود (isLicenseValid برای مالک true است)
+  //  - پرسنل (STAFF) فقط از قفل «پایان ترِیال عمومی» معاف است — انقضای خود لایسنس همه را قفل می‌کند
+  if (!(await isLicenseValid())) {
+    const phase = await licenseLockPhase();
+    const staffTrialExempt = !ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER";
+    if (!staffTrialExempt) return { error: await licenseLockedResponseDetailed() };
+  }
   if (section && !ctx.isAdmin && !ctx.sections.includes(section)) {
     return { error: forbidden(`دسترسی به بخش «${section}» برای شما فعال نیست یا منقضی شده است`) };
   }
   return { ctx };
+}
+
+/**
+ * آیا «این کاربر» با قفل لایسنس مواجه است؟ — برای /api/auth/me و تصمیم UI
+ * همان سیاست requireAuth: مالک آزاد؛ پرسنل فقط از قفل ترِیال معاف؛ بقیه در قفل (مهلت/پس از مهلت)
+ */
+export async function isUserLicenseLocked(ctx: AuthContext): Promise<boolean> {
+  if (await isLicenseValid()) return false;
+  const phase = await licenseLockPhase();
+  if (!ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER") return false;
+  return true;
 }

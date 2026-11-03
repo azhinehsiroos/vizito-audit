@@ -19,6 +19,7 @@ export async function PUT(req: NextRequest) {
       m3: clean(raw.m3),
       m6: clean(raw.m6),
       y1: clean(raw.y1),
+      perm: clean(raw.perm), // لایسنس دائمی — پرداخت یک‌باره
     };
     const telegram = typeof body.telegram === "string" ? body.telegram.trim().replace(/^@/, "").slice(0, 60) : "";
     const upserts = [

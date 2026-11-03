@@ -28,6 +28,8 @@ import {
   Crown,
   House,
   Gem,
+  Mail,
+  Megaphone,
 } from "lucide-react";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -113,6 +115,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
                       </button>
                     );
                   })}
+                  {/* صندوق پیام — همه کاربران واردشده */}
+                  {me && (
+                    <button
+                      onClick={() => navigate("messages")}
+                      className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                        view === "messages" ? "bg-accent text-accent-foreground font-semibold" : "hover:bg-accent/60"
+                      }`}
+                    >
+                      <Mail className="h-4 w-4 text-primary" />
+                      پیام‌ها
+                    </button>
+                  )}
                   {/* پشتیبان‌گیری — فقط مدیر */}
                   {me?.isAdmin && (
                     <button
@@ -135,6 +149,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     >
                       <Gem className="h-4 w-4 text-primary" />
                       فروش لایسنس
+                    </button>
+                  )}
+                  {/* پیام‌ها و اطلاع‌رسانی — فقط سازنده برنامه (مالک اصلی) */}
+                  {me?.isOwner && (
+                    <button
+                      onClick={() => navigate("owner-messages")}
+                      className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                        view === "owner-messages" ? "bg-accent text-accent-foreground font-semibold" : "hover:bg-accent/60"
+                      }`}
+                    >
+                      <Megaphone className="h-4 w-4 text-primary" />
+                      پیام‌ها و اطلاع‌رسانی
                     </button>
                   )}
                   <button

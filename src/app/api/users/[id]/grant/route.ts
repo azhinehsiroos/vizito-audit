@@ -5,7 +5,7 @@ import { strField, filterSections, isFiniteDate } from "@/lib/validate";
 
 type Params = { params: Promise<{ id: string }> };
 
-/** ثبت / تمدید دسترسی زمان‌دار کاربر */
+/** ثبت / تمدید دسترسی کاربر — expiresAt = null یعنی اعتبار دائمی واقعی (بدون سقف) */
 export async function POST(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req, "users");
   if ("error" in auth) return auth.error;
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const body = (await req.json()) as {
       sections?: string[];
-      expiresAt?: string; // ISO
+      expiresAt?: string | null; // ISO — یا null برای دائمی
       note?: string;
     };
     const user = await db.user.findUnique({ where: { id } });
@@ -26,23 +26,24 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (sections.length === 0) {
       return Response.json({ error: "حداقل یک بخش را انتخاب کنید" }, { status: 400 });
     }
-    if (!isFiniteDate(body.expiresAt)) {
-      return Response.json({ error: "مدت دسترسی الزامی است" }, { status: 400 });
+    // دائمی: expiresAt صراحتاً null یا رشته "permanent" — سقف ۵ ساله حذف شد
+    let expiresAt: Date | null = null;
+    if (body.expiresAt !== null && body.expiresAt !== "permanent") {
+      if (!isFiniteDate(body.expiresAt)) {
+        return Response.json({ error: "مدت دسترسی الزامی است" }, { status: 400 });
+      }
+      expiresAt = new Date(body.expiresAt as string);
+      if (expiresAt.getTime() <= Date.now()) {
+        return Response.json({ error: "زمان انقضا باید در آینده باشد" }, { status: 400 });
+      }
     }
-    const expiresAt = new Date(body.expiresAt as string);
-    if (expiresAt.getTime() <= Date.now()) {
-      return Response.json({ error: "زمان انقضا باید در آینده باشد" }, { status: 400 });
-    }
-    // حداکثر ۵ سال اعتبار هر گرنت
-    const maxExpiry = Date.now() + 1000 * 60 * 60 * 24 * 365 * 5;
-    const safeExpiresAt = expiresAt.getTime() > maxExpiry ? new Date(maxExpiry) : expiresAt;
 
     // گرنت‌های قبلی فعال را غیرفعال نکنیم؛ جدیدترین گرنت ملاک است
     const grant = await db.accessGrant.create({
       data: {
         userId: id,
         sections: JSON.stringify(sections),
-        expiresAt: safeExpiresAt,
+        expiresAt,
         note: strField(body.note, 200) || null,
       },
     });

@@ -19,6 +19,9 @@ export async function GET(req: NextRequest) {
       name: u.name,
       company: u.company,
       role: u.role,
+      kind: u.kind || "STAFF",
+      disabled: u.disabled,
+      trialUntil: u.trialUntil,
       createdAt: u.createdAt,
       grants: u.grants,
     }))
@@ -58,20 +61,23 @@ export async function POST(req: NextRequest) {
         company: strField(body.company, 80) || null,
         password: await hashPassword(password),
         role,
+        kind: "STAFF", // کاربر تعریف‌شده توسط مدیر = پرسنل (معاف از قفل ترِیال عمومی)
       },
     });
 
-    // اگر در همان لحظه ساخت، مدت و دسترسی تعیین شده باشد → ثبت گرنت زمان‌دار
+    // اگر در همان لحظه ساخت، بخش‌ها انتخاب شده باشد → ثبت گرنت
+    // مدت: durationHours = null ⇒ اعتبار دائمی واقعی (بدون سقف ۵/۱۰ ساله)
+    //      durationHours = عدد ⇒ ساعتی (سقف منطقی ۱۰۰ سال برای جلوگیری از سرریز تاریخ)
     const sections = filterSections(body.sections).filter((s) => s !== "users");
-    if (role === "USER" && sections.length > 0) {
-      const hours = clampNum(body.durationHours, 0, 87_600, 0); // حداکثر ۱۰ سال
+    if (role === "USER" && sections.length > 0 && body.durationHours !== undefined) {
       let expiresAt: Date | null = null;
-      if (hours === 0 && body.durationHours === null) {
-        expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 3650); // بدون انقضا
-      } else if (hours > 0) {
-        expiresAt = new Date(Date.now() + hours * 3600000);
+      if (body.durationHours === null) {
+        expiresAt = null; // دائمی واقعی
+      } else {
+        const hours = clampNum(body.durationHours, 1, 876_000, 0);
+        if (hours > 0) expiresAt = new Date(Date.now() + hours * 3_600_000);
       }
-      if (expiresAt) {
+      if (body.durationHours === null || expiresAt) {
         await db.accessGrant.create({
           data: {
             userId: user.id,

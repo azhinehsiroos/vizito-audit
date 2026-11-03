@@ -21,6 +21,13 @@ model User {
   company       String?
   password      String
   role          String         @default("USER") // ADMIN | USER
+  // نوع حساب — STAFF: پرسنل تعریف‌شده توسط مدیر (معاف از قفل پایان ترِیال عمومی)
+  //               PUBLIC: کاربر عمومیِ ثبت‌نام‌شده (دارای ترِیال شخصی ۲۴ ساعته)
+  kind          String         @default("STAFF")
+  // غیرفعال‌سازی مستقل حساب — بدون حذف اطلاعات؛ ورود و همه نشست‌ها مسدود می‌شود (سمت سرور)
+  disabled      Boolean        @default(false)
+  // ترِیال شخصی ۲۴ ساعته کاربر عمومی — فقط یک‌بار هنگام ثبت‌نام نوشته می‌شود (ضد آزمایش مجدد)
+  trialUntil    DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   grants        AccessGrant[]
@@ -28,6 +35,7 @@ model User {
   payments      Payment[]
   sessions      AuthSession[]
   notifications Notification[]
+  messageRecipients MessageRecipient[]
 }
 
 // نشست‌های سمت سرور — امکان ابطال توکن‌ها (خروج، ریست، حذف کاربر)
@@ -42,13 +50,13 @@ model AuthSession {
   updatedAt DateTime @updatedAt
 }
 
-// دسترسی زمان‌دار مدیر به کاربران
+// دسترسی زمان‌دار مدیر به کاربران — expiresAt = null یعنی اعتبار دائمی واقعی (بدون سقف)
 model AccessGrant {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   sections  String   @default("[]") // JSON array of section keys
-  expiresAt DateTime
+  expiresAt DateTime?
   note      String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -207,9 +215,41 @@ model LicenseSale {
   key           String
   price         String?
   note          String?
-  expiresAt     DateTime? // انقضای مؤثر — با شارژ مجدد تمدید می‌شود (بدون کلید جدید)
+  expiresAt     DateTime? // انقضای مؤثر — با شارژ مجدد تمدید می‌شود (بدون کلید جدید)؛ برای لایسنس دائمی همیشه null است
+  // توقف حذف خودکار (مهلت ۳۰ روزه) توسط سازنده — فقط روی دفتر فروش سرور سازنده معنا دارد
+  pauseDeletion Boolean   @default(false)
   createdAt     DateTime        @default(now())
   charges       LicenseCharge[]
+}
+
+// پیام‌های داخلی سازنده به کاربران (صندوق پیام) — حذف نرم برای حفظ تاریخچه گزارش‌پذیر
+model Message {
+  id         String    @id @default(cuid())
+  senderId   String? // شناسه مالک ارسال‌کننده
+  senderName String
+  audience   String // ALL | ADMINS | STAFF | BUYERS | SALE_EXPIRING | SALE_EXPIRED | SALE_GRACE | USER
+  title      String
+  body       String?
+  important  Boolean   @default(false)
+  deletedAt  DateTime? // حذف نرم توسط مالک — از صندوق کاربران پنهان ولی در تاریخچه با نشان «حذف‌شده»
+  createdAt  DateTime  @default(now())
+  recipients MessageRecipient[]
+
+  @@index([createdAt])
+}
+
+// گیرندگان پیام — ثبت وضعیت خوانده‌شدن؛ هر کاربر فقط ردیف‌های خودش را می‌بیند
+model MessageRecipient {
+  id        String    @id @default(cuid())
+  messageId String
+  message   Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId, readAt])
 }
 
 // تاریخچه شارژ/تمدید لایسنس خریدار — همان کلید، فقط تمدید انقضا

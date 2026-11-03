@@ -96,3 +96,4 @@ server.log
 db/*.db-shm
 db/*.db-wal
 db/custom.db
+db/

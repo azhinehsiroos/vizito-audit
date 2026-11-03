@@ -30,12 +30,16 @@ export type LicenseState = {
   daysLeft: number | null;
   ownerUnlocked?: boolean;
   trial?: boolean;
+  permanent?: boolean;
+  expiredAt?: string | null;
+  graceUntil?: string | null;
+  graceDaysLeft?: number | null;
   installId?: string | null;
   /** نصب تازه (هیچ حسابی نیست) — به‌جای این صفحه، صفحه ورود/ثبت‌نام مدیر اول نشان داده می‌شود */
   freshInstall?: boolean;
 };
 
-type DurationKey = "m1" | "m3" | "m6" | "y1";
+type DurationKey = "m1" | "m3" | "m6" | "y1" | "perm";
 
 type Pricing = {
   prices: Record<DurationKey, string>;
@@ -44,13 +48,14 @@ type Pricing = {
 };
 
 const DEFAULT_PRICING: Pricing = {
-  prices: { m1: "", m3: "", m6: "", y1: "" },
+  prices: { m1: "", m3: "", m6: "", y1: "", perm: "" },
   telegram: "",
   durations: [
     { key: "m1", label: "۱ ماهه", days: 30 },
     { key: "m3", label: "۳ ماهه", days: 90 },
     { key: "m6", label: "۶ ماهه", days: 180 },
     { key: "y1", label: "۱ ساله", days: 365 },
+    { key: "perm", label: "دائمی", days: 0 },
   ],
 };
 
@@ -120,14 +125,17 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: key.trim() }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string; name?: string; daysLeft?: number };
+      const data = (await res.json()) as { ok?: boolean; error?: string; name?: string; daysLeft?: number | null };
       if (!res.ok || !data.ok) {
         toast({ title: "فعال‌سازی نشد", description: data.error || "کلید نامعتبر است", variant: "destructive" });
         return;
       }
       toast({
         title: "لایسنس فعال شد ✅",
-        description: `${data.name || "ویزیتو"} — ${toFa(data.daysLeft ?? 0)} روز اعتبار`,
+        description:
+          data.daysLeft === null || data.daysLeft === undefined
+            ? `${data.name || "ویزیتو"} — اعتبار دائمی`
+            : `${data.name || "ویزیتو"} — ${toFa(data.daysLeft)} روز اعتبار`,
       });
       onActivated();
     } catch {
@@ -171,6 +179,24 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
               </p>
             )}
           </div>
+
+          {/* مهلت تمدید ۳۰ روزه پس از انقضای لایسنس مدت‌دار */}
+          {expired && state.graceDaysLeft !== null && state.graceDaysLeft !== undefined && (
+            <div className="rounded-xl border border-amber-300/60 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 space-y-1.5 text-right">
+              <div className="flex items-center justify-between gap-2">
+                <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-0">
+                  <Hourglass className="h-3 w-3" /> مهلت تمدید
+                </Badge>
+                <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300">
+                  {toFa(state.graceDaysLeft)} روز باقی‌مانده
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-5">
+                در این مدت امکانات قفل است ولی تمام اطلاعات شما (مشتریان، سفارش‌ها، پرداخت‌ها) محفوظ است.
+                با تمدید لایسنس همه‌چیز بدون تغییر فعال می‌شود.
+              </p>
+            </div>
+          )}
 
           {/* دوره آزمایشی رایگان — شمارش معکوس زنده */}
           {state.trial && trial && (

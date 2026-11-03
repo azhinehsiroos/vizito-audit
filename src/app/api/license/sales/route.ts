@@ -9,6 +9,7 @@ const DURATIONS = [
   { days: 90, label: "۳ ماهه" },
   { days: 180, label: "۶ ماهه" },
   { days: 365, label: "۱ ساله" },
+  { days: 0, label: "دائمی" }, // پرداخت یک‌باره — بدون تاریخ انقضا
 ];
 
 function labelFor(days: number): string {
@@ -32,12 +33,17 @@ export async function GET(req: NextRequest) {
   const now = Date.now();
   return Response.json({
     sales: sales.map((s) => {
+      // لایسنس دائمی (durationDays = 0) — بدون انقضا، خارج از چرخه مهلت/حذف
+      if (s.durationDays === 0) {
+        return { ...s, expiresAt: null, daysLeft: null, permanent: true };
+      }
       // انقضای مؤثر: رکورد ثبت‌شده (قابل تمدید با شارژ مجدد) یا محاسبه از تاریخ صدور
       const eff = s.expiresAt ?? new Date(s.createdAt.getTime() + s.durationDays * 86_400_000);
       return {
         ...s,
         expiresAt: eff.toISOString(),
         daysLeft: Math.ceil((eff.getTime() - now) / 86_400_000),
+        permanent: false,
       };
     }),
   });
@@ -59,8 +65,10 @@ export async function POST(req: NextRequest) {
     const installId = strOrNull(body.installId, 40);
     if (!buyerName) return Response.json({ error: "نام خریدار الزامی است" }, { status: 400 });
     if (!buyerMobile) return Response.json({ error: "موبایل خریدار الزامی است" }, { status: 400 });
-    if (!Number.isFinite(durationDays) || durationDays < 1 || durationDays > 3650) {
-      return Response.json({ error: "مدت لایسنس نامعتبر است" }, { status: 400 });
+    // مدت: ۰ = دائمی (پرداخت یک‌باره) یا ۱ تا ۳۶۵۰ روز
+    const isPermanent = durationDays === 0;
+    if (!Number.isFinite(durationDays) || (!isPermanent && (durationDays < 1 || durationDays > 3650))) {
+      return Response.json({ error: "مدت لایسنس نامعتبر است (۰ = دائمی یا ۱ تا ۳۶۵۰ روز)" }, { status: 400 });
     }
     // امنیت: کلید بدون installId روی هر سروری کار می‌کند — صدورش ممنوع است
     if (!installId) {
@@ -70,16 +78,19 @@ export async function POST(req: NextRequest) {
       );
     }
     // صدور کلید VZT2 با امضای نامتقارن — فقط روی سروری که کلید خصوصی دارد (سرور سازنده)
+    // لایسنس دائمی: e = 0 در payload — بدون تاریخ انقضا
     let key: string;
     try {
-      key = makeLicenseKey(buyerName, buyerMobile, new Date(Date.now() + durationDays * 86_400_000), installId);
+      key = isPermanent
+        ? makeLicenseKey(buyerName, buyerMobile, new Date(0), installId)
+        : makeLicenseKey(buyerName, buyerMobile, new Date(Date.now() + durationDays * 86_400_000), installId);
     } catch {
       return Response.json(
         { error: "صدور کلید روی این سرور فعال نیست — از اسکریپت license:gen روی سیستم سازنده استفاده کنید (شارژ مجدد خریداران موجود کار می‌کند)" },
         { status: 400 }
       );
     }
-    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
+    const expiresAt = isPermanent ? null : new Date(Date.now() + durationDays * 86_400_000);
     const sale = await db.licenseSale.create({
       data: { buyerName, buyerMobile, durationDays, durationLabel: labelFor(durationDays), key, price, note, expiresAt },
     });
@@ -87,8 +98,9 @@ export async function POST(req: NextRequest) {
       {
         sale: {
           ...sale,
-          expiresAt: (sale.expiresAt ?? expiresAt).toISOString(),
-          daysLeft: Math.ceil(((sale.expiresAt ?? expiresAt).getTime() - Date.now()) / 86_400_000),
+          expiresAt: expiresAt ? expiresAt.toISOString() : null,
+          daysLeft: expiresAt ? Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000) : null,
+          permanent: isPermanent,
         },
       },
       { status: 201 }

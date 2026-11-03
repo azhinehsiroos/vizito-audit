@@ -210,8 +210,14 @@ export async function POST(req: NextRequest) {
           name,
           company,
           password: passwordHash,
-          // نقش: اولین کاربر = مدیر؛ سازنده با کلید معتبر = «همیشه» مدیر؛ بقیه = کاربر عادی
+          // نقش: اولین کاربر = مدیر؛ سازنده با کلید معتبر = «همیشه» مدیر؛ بقیه = کاربر عمومی
           role: isFirst || ownerSetupOk ? "ADMIN" : "USER",
+          // نوع حساب: کاربران عادیِ ثبت‌نامی = PUBLIC با ترِیال شخصی ۲۴ ساعته (یک‌بار)
+          // ضد دور زدن: trialUntil فقط همین‌جا و فقط برای حساب تازه نوشته می‌شود؛
+          // موبایل یکتاست و ثبت‌نام تکراری مطلقاً رد می‌شود + محدودیت نرخ ثبت‌نام فعال است
+          ...(isFirst || ownerSetupOk
+            ? { kind: "STAFF" as const }
+            : { kind: "PUBLIC" as const, trialUntil: new Date(Date.now() + 24 * 3_600_000) }),
         },
       });
       return { user, isFirst, upgraded: false };

@@ -77,9 +77,22 @@ export type LicensePayload = {
   v: 2;
   n: string; // نام مشتری / شرکت
   m: string; // موبایل
-  e: number; // انقضا (epoch ms)
+  e: number; // انقضا (epoch ms) — مقدار ۰ یعنی لایسنس «دائمی» بدون تاریخ انقضا
   i: string; // installId نصب مقصد — الزامی (ضد اشتراک‌گذاری کلید)
 };
+
+/** کلید دائمی: e = 0 — بدون انقضا، خارج از چرخه مهلت و حذف */
+export function isPermanentPayload(p: LicensePayload): boolean {
+  return p.e === 0;
+}
+
+/** مهلت تمدید ۳۰ روزه پس از انقضای لایسنس مدت‌دار */
+export const LICENSE_GRACE_MS = 30 * 86_400_000;
+
+export type LicenseLockPhase =
+  | "NOT_ACTIVATED" // بدون لایسنس و بدون ترِیال
+  | "TRIAL_OVER" // ترِیال عمومی تمام شده و لایسنی خریداری نشده (پرسنل معاف است)
+  | "LICENSE_EXPIRED"; // لایسنس مدت‌دار منقضی شده — در مهلت تمدید ۳۰ روزه یا پس از آن
 
 export type LicenseState = {
   activated: boolean;
@@ -90,6 +103,10 @@ export type LicenseState = {
   daysLeft: number | null;
   ownerUnlocked?: boolean;
   trial?: boolean;
+  permanent?: boolean; // لایسنس دائمی — بدون تاریخ انقضا و خارج از چرخه حذف
+  expiredAt?: string | null; // لحظه انقضای مؤثر (فقط وقتی منقضی است)
+  graceUntil?: string | null; // پایان مهلت تمدید ۳۰ روزه (فقط وقتی منقضی است)
+  graceDaysLeft?: number | null; // روزهای باقی‌مانده مهلت تمدید
   installId?: string;
 };
 
@@ -208,11 +225,14 @@ export async function activateLicense(key: string): Promise<LicensePayload> {
   });
   // با فعال‌شدن لایسنس واقعی، دوره آزمایشی بی‌معناست
   await db.setting.deleteMany({ where: { key: TRIAL_KEY } }).catch(() => {});
+  // چرخه حیات داده از نو آغاز می‌شود — لاگ حذف قبلی و توقف حذف پاک می‌شود
+  await db.setting.deleteMany({ where: { key: { in: ["data_deleted_at", "retention_paused"] } } }).catch(() => {});
   return payload;
 }
 
 /** انقضای مؤثر لایسنس: حداکثر انقضای امضاشده کلید و انقضای ثبت‌شده در دفتر فروش (شارژ مجدد) */
 function effectiveExpiry(lic: { payload: LicensePayload; saleExpiresAt: Date | null }): number {
+  if (isPermanentPayload(lic.payload)) return Number.MAX_SAFE_INTEGER; // دائمی
   const signed = lic.payload.e;
   const sale = lic.saleExpiresAt ? lic.saleExpiresAt.getTime() : 0;
   return Math.max(signed, sale);
@@ -274,19 +294,58 @@ export async function getLicenseState(): Promise<LicenseState> {
   }
   const locked = await installLocked(lic);
   const eff = effectiveExpiry(lic);
-  const daysLeft = Math.ceil((eff - Date.now()) / 86_400_000);
+  const permanent = isPermanentPayload(lic.payload);
   const valid = !locked && eff > Date.now();
+  // مهلت تمدید ۳۰ روزه — فقط برای لایسنس مدت‌دار منقضی‌شده (دائمی هرگز وارد چرخه انقضا نمی‌شود)
+  const expired = !locked && !valid && !permanent;
+  const graceUntilMs = expired ? eff + LICENSE_GRACE_MS : 0;
   return {
     activated: true,
     valid,
     // اطلاعات دارنده لایسنس فقط برای کاربران واردشده برگردانده می‌شود (در status عمومی حذف می‌شود)
     name: lic.payload.n,
     mobile: lic.payload.m,
-    expiresAt: new Date(eff).toISOString(),
-    daysLeft,
+    expiresAt: permanent ? null : new Date(eff).toISOString(),
+    daysLeft: permanent ? null : Math.ceil((eff - Date.now()) / 86_400_000),
     trial: lic.payload.n.includes("آزمایشی"),
+    permanent,
+    expiredAt: expired ? new Date(eff).toISOString() : null,
+    graceUntil: expired ? new Date(graceUntilMs).toISOString() : null,
+    graceDaysLeft: expired ? Math.max(0, Math.ceil((graceUntilMs - Date.now()) / 86_400_000)) : null,
     installId,
   };
+}
+
+/**
+ * تفکیک فاز قفل لایسنس برای سیاست دسترسی:
+ *  - TRIAL_OVER: لایسنس هیچ‌وقت خریداری نشده و ترِیال عمومی تمام شده — پرسنل (STAFF) معاف است
+ *  - LICENSE_EXPIRED: لایسنس مدت‌دار منقضی شده — همه (به‌جز مالک) در مهلت/پس از مهلت قفل‌اند
+ *  - NOT_ACTIVATED: هیچ لایسنسی فعال نشده
+ */
+export async function licenseLockPhase(): Promise<LicenseLockPhase> {
+  const lic = await getStoredLicense();
+  if (lic) return "LICENSE_EXPIRED";
+  const t = await trialUntil();
+  if (t) return "TRIAL_OVER";
+  return "NOT_ACTIVATED";
+}
+
+/** جزئیات قفل برای پاسخ ۴۰۲ — شامل وضعیت مهلت تمدید (فقط ساعت سرور) */
+export async function licenseLockDetail(): Promise<{
+  phase: LicenseLockPhase;
+  graceDaysLeft: number | null;
+  graceUntil: string | null;
+}> {
+  const phase = await licenseLockPhase();
+  if (phase === "LICENSE_EXPIRED") {
+    const state = await getLicenseState();
+    return {
+      phase,
+      graceDaysLeft: state.graceDaysLeft ?? null,
+      graceUntil: state.graceUntil ?? null,
+    };
+  }
+  return { phase, graceDaysLeft: null, graceUntil: null };
 }
 
 /** پاسخ استاندارد 402 برای قفل لایسنس */
@@ -295,6 +354,24 @@ export function licenseLockedResponse(): Response {
     {
       error: "لایسنس برنامه منقضی یا فعال نشده است — لطفاً کلید لایسنس را وارد یا شارژ کنید (اطلاعات شما محفوظ است)",
       code: "LICENSE_LOCKED",
+    },
+    { status: 402 }
+  );
+}
+
+/** پاسخ ۴۰۲ همراه با جزئیات مهلت تمدید — برای مسیرهای احراز هویت‌شده */
+export async function licenseLockedResponseDetailed(): Promise<Response> {
+  const d = await licenseLockDetail();
+  return Response.json(
+    {
+      error:
+        d.phase === "TRIAL_OVER"
+          ? "دوره آزمایشی به پایان رسیده است — برای ادامه استفاده لایسنس تهیه کنید (اطلاعات شما محفوظ است)"
+          : "لایسنس برنامه منقضی شده است — در مهلت تمدید ۳۰ روزه کلید شارژ را وارد کنید (اطلاعات شما محفوظ است)",
+      code: "LICENSE_LOCKED",
+      lockPhase: d.phase,
+      graceDaysLeft: d.graceDaysLeft,
+      graceUntil: d.graceUntil,
     },
     { status: 402 }
   );

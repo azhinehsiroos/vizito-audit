@@ -9,7 +9,7 @@ export async function GET() {
     where: { key: { in: ["license_prices", "support_telegram"] } },
   });
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  let prices = { m1: "", m3: "", m6: "", y1: "" };
+  let prices = { m1: "", m3: "", m6: "", y1: "", perm: "" };
   try {
     prices = { ...prices, ...(JSON.parse(map.license_prices || "{}") as typeof prices) };
   } catch {
@@ -23,6 +23,7 @@ export async function GET() {
       { key: "m3", label: "۳ ماهه", days: 90 },
       { key: "m6", label: "۶ ماهه", days: 180 },
       { key: "y1", label: "۱ ساله", days: 365 },
+      { key: "perm", label: "دائمی", days: 0 },
     ],
   });
 }

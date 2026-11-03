@@ -14,6 +14,8 @@ export type ViewKey =
   | "reports"
   | "catalogs"
   | "users"
+  | "messages" // صندوق پیام — همه کاربران
+  | "owner-messages" // پیام‌ها و اطلاع‌رسانی — فقط سازنده برنامه
   | "backup"
   | "license-sales"
   | "settings";
@@ -25,9 +27,12 @@ export type Me = {
   company: string | null;
   role: string;
   sections: string[];
-  grantExpiresAt: string | null;
+  grantExpiresAt: string | null; // null = دائمی/مدیر
   isAdmin: boolean;
   isOwner?: boolean; // سازنده برنامه — دسترسی به بخش فروش لایسنس
+  kind?: string; // STAFF (پرسنل) | PUBLIC (کاربر عمومی)
+  licenseLocked?: boolean; // آیا این کاربر با قفل لایسنس مواجه است (سمت سرور تصمیم‌گیری می‌شود)
+  trialUntil?: string | null; // ترِیال شخصی کاربر عمومی
 };
 
 /** پیش‌نویس فاکتور هنگام صدور از پروفایل مشتری — انتخاب کالاها منتقل می‌شود */

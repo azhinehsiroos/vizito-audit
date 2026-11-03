@@ -95,11 +95,14 @@ export type AppUser = {
   name: string;
   company: string | null;
   role: string;
+  kind?: string; // STAFF | PUBLIC
+  disabled?: boolean; // غیرفعال‌سازی مستقل حساب
+  trialUntil?: string | null; // ترِیال شخصی کاربر عمومی
   createdAt: string;
   grants: {
     id: string;
     sections: string;
-    expiresAt: string;
+    expiresAt: string | null; // null = اعتبار دائمی واقعی
     note: string | null;
     createdAt: string;
   }[];
@@ -116,8 +119,10 @@ export type LicenseSale = {
   price: string | null;
   note: string | null;
   createdAt: string;
-  expiresAt: string;
-  daysLeft: number;
+  expiresAt: string | null; // null = لایسنس دائمی
+  daysLeft: number | null; // null = دائمی
+  permanent?: boolean;
+  pauseDeletion?: boolean; // توقف حذف خودکار توسط مالک
   charges?: LicenseCharge[];
 };
 

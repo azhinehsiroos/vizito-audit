@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAuth } from "@/lib/auth";
 import { getLicenseState } from "@/lib/license";
 import { db } from "@/lib/db";
+import { lifecycleState, runDataRetentionSweep } from "@/lib/lifecycle";
 
 /**
  * وضعیت لایسنس:
@@ -16,17 +17,28 @@ export async function GET(req: NextRequest) {
   try {
     const state = await getLicenseState();
     const freshInstall = (await db.user.count()) === 0;
+    // تریگر تنبل چرخه حیات — صفحه قفل این مسیر را مرتب صدا می‌زند؛ اگر مهلت ۳۰ روزه
+    // تمام شده باشد حذف کنترل‌شده (با گارد درون‌پردازشی و شرط فاز) در پس‌زمینه اجرا می‌شود
+    if (state.activated && !state.valid && !state.ownerUnlocked) {
+      void lifecycleState()
+        .then((l) => (l.phase === "SWEEP_DUE" ? runDataRetentionSweep("status-probe") : null))
+        .catch(() => {});
+    }
     const auth = await getAuth(req);
     if (auth) {
       return Response.json({ ...state, freshInstall });
     }
-    // نسخه عمومی حداقلی
+    // نسخه عمومی حداقلی — شامل وضعیت مهلت تمدید ۳۰ روزه و لایسنس دائمی (بدون داده حساس)
     return Response.json({
       activated: state.activated,
       valid: state.valid,
       expiresAt: state.expiresAt,
       daysLeft: state.daysLeft,
       trial: state.trial ?? false,
+      permanent: state.permanent ?? false,
+      expiredAt: state.expiredAt ?? null,
+      graceUntil: state.graceUntil ?? null,
+      graceDaysLeft: state.graceDaysLeft ?? null,
       installId: state.installId ?? null,
       name: null,
       mobile: null,

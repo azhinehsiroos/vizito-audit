@@ -8,7 +8,6 @@ import {
   dbRetryAfterSeconds,
   getClientIp,
 } from "@/lib/rate-limit";
-import { isLicenseValid, licenseLockedResponse, isOwnerMobile } from "@/lib/license";
 import { normalizeMobile, MOBILE_RE } from "@/lib/validate";
 
 const WRONG_CREDENTIALS = { error: "شماره موبایل یا رمز عبور اشتباه است" };
@@ -27,9 +26,11 @@ export async function POST(req: NextRequest) {
       return Response.json(WRONG_CREDENTIALS, { status: 401 });
     }
 
-    // قفل لایسنس — سازنده برنامه همیشه می‌تواند وارد شود؛ بقیه بدون لایسنس معتبر ممنوع (داده‌ها حذف نمی‌شوند)
-    if (!isOwnerMobile(mobile) && !(await isLicenseValid())) return licenseLockedResponse();
-
+    // سیاست ورود در قفل لایسنس:
+    //  - ورود همیشه برای اعتبارنامه صحیح مجاز است — قفل امکانات در سطح API اعمال می‌شود (۴۰۲)
+    //  - در مهلت تمدید ۳۰ روزه کاربر وارد می‌شود و وضعیت لایسنس/زمان باقی‌مانده را می‌بیند
+    //  - پرسنل (STAFF) در فاز «پایان ترِیال عمومی» از قفل معاف است و می‌تواند کار کند
+    //  - حساب مالک همیشه آزاد است
     const ip = getClientIp(req);
     const failKey = `login-f:${mobile}:${ip}`;
 
@@ -65,6 +66,15 @@ export async function POST(req: NextRequest) {
 
     // ورود موفق — سطل تلاش ناموفقِ همین (شماره+IP) پاک می‌شود (ضد قفل باقی‌مانده)
     await dbRateLimitReset(failKey);
+
+    // حساب غیرفعال — بعد از تأیید رمز (بدون افشای وجود حساب در مسیر ناموفق)
+    // سیاست امنیتی: غیرفعال‌سازی ⇒ ابطال همه نشست‌ها + جلوگیری از ورود جدید (سمت سرور)
+    if (user.disabled) {
+      return Response.json(
+        { error: "این حساب غیرفعال شده است — برای فعال‌سازی با مدیر سیستم تماس بگیرید" },
+        { status: 403 }
+      );
+    }
 
     const token = await newToken(user.id, user.role, req.headers.get("user-agent"));
     // امنیت: توکن «فقط» در کوکی HttpOnly تحویل می‌شود — هیچ توکنی در بدنه پاسخ

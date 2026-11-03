@@ -46,6 +46,8 @@ import {
   Send,
   Eye,
   EyeOff,
+  Power,
+  PowerOff,
 } from "lucide-react";
 
 /** همه گزینه‌های دسترسی: بخش‌های اصلی (بدون مدیریت کاربران) + دسترسی‌های ویژه */
@@ -185,9 +187,10 @@ export function UsersView() {
   const openGrant = (u: AppUser) => {
     setGrantUser(u);
     const now = Date.now();
-    const active = u.grants.find((g) => new Date(g.expiresAt).getTime() > now);
+    // گرنت دائمی (expiresAt = null) همیشه فعال است
+    const active = u.grants.find((g) => g.expiresAt === null || new Date(g.expiresAt).getTime() > now);
     setGrantSections(active ? JSON.parse(active.sections) : []);
-    setDuration("720");
+    setDuration(active?.expiresAt === null ? "never" : "720");
   };
 
   // تغییر رمز عبور کاربر توسط مدیر (۱۲-۱)
@@ -229,10 +232,8 @@ export function UsersView() {
     const preset = DURATION_PRESETS.find((d) => String(d.hours) === duration || (d.hours === null && duration === "never"));
     const hours = preset?.hours;
     if (hours === undefined) return;
-    const expiresAt =
-      hours === null
-        ? new Date(Date.now() + 1000 * 60 * 60 * 24 * 3650).toISOString()
-        : new Date(Date.now() + hours * 3600000).toISOString();
+    // اعتبار دائمی واقعی — بدون تاریخ انقضا (سقف ۵/۱۰ ساله حذف شد)
+    const expiresAt = hours === null ? null : new Date(Date.now() + hours * 3600000).toISOString();
     setSaving(true);
     try {
       await api(`/api/users/${grantUser.id}/grant`, {
@@ -246,6 +247,28 @@ export function UsersView() {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
     } finally {
       setSaving(false);
+    }
+  };
+
+  // فعال/غیرفعال‌سازی مستقل حساب — بدون حذف اطلاعات؛ نشست‌ها سمت سرور ابطال می‌شود
+  const toggleDisabled = async (u: AppUser) => {
+    const action = !u.disabled;
+    if (
+      action &&
+      !confirm(
+        `حساب «${u.name}» غیرفعال شود؟\nکاربر نمی‌تواند وارد شود و نشست‌های فعالش باطل می‌شود؛ اطلاعات او حفظ می‌ماند.`
+      )
+    )
+      return;
+    try {
+      await api(`/api/users/${u.id}`, { method: "PUT", body: { disabled: action } });
+      toast({
+        title: action ? "حساب غیرفعال شد ✅" : "حساب فعال شد ✅",
+        description: action ? `${u.name} دیگر نمی‌تواند وارد شود` : `${u.name} می‌تواند وارد شود`,
+      });
+      load();
+    } catch (e) {
+      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
     }
   };
 
@@ -292,7 +315,8 @@ export function UsersView() {
 
   const activeGrant = (u: AppUser) => {
     const now = Date.now();
-    const valid = u.grants.filter((g) => new Date(g.expiresAt).getTime() > now);
+    // گرنت دائمی (expiresAt = null) همیشه فعال است
+    const valid = u.grants.filter((g) => g.expiresAt === null || new Date(g.expiresAt).getTime() > now);
     return valid[0] || null;
   };
 
@@ -333,6 +357,11 @@ export function UsersView() {
                         ) : (
                           <Badge variant="secondary" className="text-[9px]">کاربر</Badge>
                         )}
+                        {u.disabled && (
+                          <Badge variant="destructive" className="text-[9px] gap-1">
+                            <PowerOff className="h-2.5 w-2.5" /> غیرفعال
+                          </Badge>
+                        )}
                         {u.id === me?.id && (
                           <Badge variant="outline" className="text-[9px]">شما</Badge>
                         )}
@@ -347,6 +376,15 @@ export function UsersView() {
                           <>
                             <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => openGrant(u)}>
                               <KeyRound className="h-3 w-3" /> {grant ? "تمدید دسترسی" : "تعیین دسترسی"}
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className={`h-7 w-7 ${u.disabled ? "text-emerald-600" : "text-destructive"}`}
+                              onClick={() => void toggleDisabled(u)}
+                              aria-label={u.disabled ? "فعال‌سازی حساب" : "غیرفعال‌سازی حساب"}
+                            >
+                              {u.disabled ? <Power className="h-3.5 w-3.5" /> : <PowerOff className="h-3.5 w-3.5" />}
                             </Button>
                             <Button size="icon" variant="ghost" className="h-7 w-7 text-primary" onClick={() => openNoteDialog(u)} aria-label="ارسال یادداشت">
                               <MessageSquare className="h-3.5 w-3.5" />
@@ -371,7 +409,9 @@ export function UsersView() {
                           <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 mt-0.5 shrink-0" />
                           <div>
                             <div className="font-medium">
-                              {expiryLabel(grant.expiresAt)} ({formatJalali(grant.expiresAt)})
+                              {grant.expiresAt === null
+                                ? "اعتبار دائمی — بدون تاریخ انقضا"
+                                : `${expiryLabel(grant.expiresAt)} (${formatJalali(grant.expiresAt)})`}
                             </div>
                             <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-1">
                               {sections.map((s) => (
@@ -381,6 +421,11 @@ export function UsersView() {
                               ))}
                             </div>
                           </div>
+                        </div>
+                      ) : u.disabled ? (
+                        <div className="flex items-center gap-1.5 text-[11px] text-destructive">
+                          <PowerOff className="h-3.5 w-3.5 shrink-0" />
+                          حساب غیرفعال است — کاربر نمی‌تواند وارد شود (اطلاعاتش حفظ شده است)
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">

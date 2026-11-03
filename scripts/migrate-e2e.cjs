@@ -25,6 +25,8 @@ const { DatabaseSync } = require("node:sqlite");
 const { runMigrations } = require("./migrate-sqlite.cjs");
 
 const MIGRATIONS_DIR = path.join(__dirname, "..", "prisma", "migrations");
+// تعداد مهاجرت‌ها پویا خوانده می‌شود — با افزودن مهاجرت جدید تست‌ها خودکار سازگار می‌شوند
+const MIG_COUNT = require("fs").readdirSync(MIGRATIONS_DIR).filter((d) => /^\d{14}_/.test(d)).sort().length;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "vizito-migrate-e2e-"));
 
 const PRISMA_MIG_TABLE = `CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
@@ -145,7 +147,7 @@ console.log("\n── ۲) دیتابیس کامل db-push بدون رکورد م
   const after = counts(dbo);
   const afterStructure = structure(dbo);
   const baselineMentioned = logs.join("\n").includes("baseline");
-  if (recs.length === 4 && baselineMentioned) ok("همه مهاجرت‌ها baseline ساختاری شدند (بدون اجرای SQL)");
+  if (recs.length === MIG_COUNT && baselineMentioned) ok("همه مهاجرت‌ها baseline ساختاری شدند (بدون اجرای SQL)");
   else bad("baseline ناموفق: رکورد=" + recs.length + " baselineMentioned=" + baselineMentioned);
   if (before === after && beforeStructure === afterStructure) ok("داده‌ها و ساختار دقیقاً دست‌نخورده ماند (" + after + ")");
   else bad("تغییر ناخواسته در داده/ساختار! قبل=" + before + " بعد=" + after);
@@ -163,7 +165,7 @@ console.log("\n── ۳) اجرای مجدد روی دیتابیس مهاجرت
   dbo.close();
   runMigrations({ dbFile: f, migrationsDir: MIGRATIONS_DIR });
   dbo = freshDb(f);
-  if (counts(dbo) === before && migrationRecords(dbo).length === 4) ok("اجرای مجدد: هیچ تغییری نکرد (idempotent)");
+  if (counts(dbo) === before && migrationRecords(dbo).length === MIG_COUNT) ok("اجرای مجدد: هیچ تغییری نکرد (idempotent)");
   else bad("اجرای مجدد داده را تغییر داد!");
   dbo.close();
 }
@@ -191,7 +193,7 @@ console.log("\n── ۴) بازیابی پس از قطع ناگهانی (وضع
   const recs = migrationRecords(dbo);
   const hasArchived = dbo.prepare('PRAGMA table_info("Customer")').all().some((c) => c.name === "archived");
   const orderFk = dbo.prepare('PRAGMA foreign_key_list("Order")').all().find((r) => r.table === "Customer");
-  if (recs.length === 4 && hasArchived && orderFk && orderFk.on_delete === "RESTRICT")
+  if (recs.length === MIG_COUNT && hasArchived && orderFk && orderFk.on_delete === "RESTRICT")
     ok("از وضعیت میانی ادامه داد و به ساختار آخر رسید (" + recs.length + " مهاجرت)");
   else bad("ادامه از وضعیت میانی ناموفق: recs=" + recs.length);
   dbo.close();
@@ -269,7 +271,7 @@ console.log("\n── ۷) ناسازگاری جدول مهاجرت با ساخت
   for (const d of dirs.slice(0, 2)) {
     mid.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, d, "migration.sql"), "utf8"));
   }
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < MIG_COUNT; i++) {
     mid.exec('INSERT INTO "_prisma_migrations" ("id","checksum","migration_name","started_at") VALUES (\'r' + i + '\',\'x\',\'' + dirs[i] + '\',CURRENT_TIMESTAMP)');
   }
   mid.close();
@@ -287,7 +289,7 @@ console.log("\n── ۷) ناسازگاری جدول مهاجرت با ساخت
   dbo2.close();
   if (aborted && msg.includes("ناسازگاری جدول مهاجرت")) ok("توقف با پیام ناسازگاری رکورد/ساختار");
   else bad("ناسازگاری رکورد تشخیص داده نشد! aborted=" + aborted + " msg=" + msg.slice(0, 120));
-  if (recs.length === 4 && !hasArchived) ok("هیچ تغییری در ساختار/رکورد داده نشد");
+  if (recs.length === MIG_COUNT && !hasArchived) ok("هیچ تغییری در ساختار/رکورد داده نشد");
   else bad("وضعیت تغییر کرد! recs=" + recs.length + " archived=" + hasArchived);
 }
 

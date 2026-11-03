@@ -40,10 +40,17 @@ export async function POST(req: NextRequest) {
       }
     }
     // ضد قفل‌کردن سیستم با کلید قدیمی: انقضای کلید جدید باید از انقضای مؤثر فعلی بیشتر باشد
+    // لایسنس دائمی (e = 0) همیشه «جدیدتر» از هر کلید مدت‌دار است
     const cur = await getLicenseState();
-    if (cur.activated && cur.expiresAt) {
+    if (cur.activated && cur.permanent && payload.e !== 0) {
+      return Response.json(
+        { error: "لایسنس فعلی این نصب دائمی است — کلید مدت‌دار جایگزین نمی‌شود" },
+        { status: 400 }
+      );
+    }
+    if (cur.activated && !cur.permanent && cur.expiresAt) {
       const curExp = new Date(cur.expiresAt).getTime();
-      if (payload.e <= curExp) {
+      if (payload.e !== 0 && payload.e <= curExp) {
         return Response.json({ error: "این کلید جدیدتر از لایسنس فعلی نیست — کلید شارژ جدید را وارد کنید" }, { status: 400 });
       }
     }
