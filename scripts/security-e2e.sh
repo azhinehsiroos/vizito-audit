@@ -191,7 +191,7 @@ n429ip=$(echo $codes | tr ' ' '\n' | rg -c '^429$' || echo 0)
 n401ip=$(echo $codes | tr ' ' '\n' | rg -c '^401$' || echo 0)
 [ "$n401ip" = "30" ] && [ "$n429ip" = "5" ] && ok "۳۰ درخواست اول ۴۰۱، بعدش ۴۲۹ (سقف per-IP)" || bad "الگوی سیل: 401×$n401ip 429×$n429ip"
 
-say "== ۷) Rate limit — هم‌زمانی (۱۶ درخواست موازی روی کلید تازه) =="
+say "== ۷) Rate limit — هم‌زمانی (۱۶ درخواست موازی روی کلید تازه) — v1.0.10 =="
 codes=$(for i in $(seq 1 16); do
   curl -s -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' -H "X-Forwarded-For: $IP_CONC" \
     -d '{"mobile":"09120008888","password":"wrong-pass-123"}' "$BASE_URL/api/auth/login" &
@@ -199,13 +199,105 @@ done; wait)
 codes=$(echo "$codes" | tr '\n' ' ')
 say "  کدها:$codes"
 n500=$(echo $codes | tr ' ' '\n' | rg -c '^5' || echo 0)
-# در انفجار کاملاً موازی همه قبل از ثبت اولین شکست از چک قفل رد می‌شوند (TOCTOU محدود و
-# طراحی‌شده: شمارش فقط تلاش ناموفق است تا مهاجم نتواند حساب قربانی را عمداً قفل کند) —
-# بنابراین معیار درست: نبودِ ۵xx + فعال شدن قفل در «اولین درخواست ترتیبی بعدی»
+n401c=$(echo $codes | tr ' ' '\n' | rg -c '^401$' || echo 0)
+n429c=$(echo $codes | tr ' ' '\n' | rg -c '^429$' || echo 0)
+# v1.0.10: افزایش اتمیک شمارنده ناموفق ⇒ حداکثر ۸ پاسخ ۴۰۱ (تا سقف) و بقیه ۴۲۹ —
+# یعنی سقف تلاش ناموفق حتی در انفجار کاملاً موازی روی «پاسخ‌ها» هم مؤثر است
+[ "$n500" = "0" ] && ok "هیچ ۵xx در رقابت هم‌زمان نبود" || bad "$n500 خطای سرور در رقابت"
+[ "$((n401c + n429c))" = "16" ] && ok "همه ۱۶ پاسخ داشتند (401×$n401c + 429×$n429c — بدون ریزش)" || bad "پاسخ‌های گم‌شده: مجموع=$n401c+$n429c"
+[ "$n401c" -le "8" ] && ok "حداکثر ۸ پاسخ ۴۰۱ در انفجار موازی (سقف تلاش ناموفق مؤثر است)" || bad "سقف شکست: ۴۰۱×$n401c (بیشتر از ۸)"
+[ "$n429c" -ge "8" ] && ok "حداقل ۸ پاسخ ۴۲۹ (قفل هم‌زمان فعال شد)" || bad "قفل هم‌زمان ضعیف: 429×$n429c"
 NEXT=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "X-Forwarded-For: $IP_CONC" \
   -d '{"mobile":"09120008888","password":"wrong-pass-123"}' "$BASE_URL/api/auth/login")
-[ "$n500" = "0" ] && ok "هیچ ۵xx در رقابت هم‌زمان نبود" || bad "$n500 خطای سرور در رقابت"
-[ "$NEXT" = "429" ] && ok "قفل بعد از انفجار موازی در درخواست ترتیبی فعال است (429)" || bad "قفل بعد از انفجار فعال نشد (کد: $NEXT)"
+[ "$NEXT" = "429" ] && ok "درخواست ترتیبی بعدی هم ۴۲۹ (قفل برقرار است)" || bad "قفل بعد از انفجار فعال نشد (کد: $NEXT)"
+
+say "== ۸) رقابت حذف مشتری و ثبت هم‌زمان سفارش — هیچ سابقه مالی از بین نمی‌رود (v1.0.10) =="
+RACE_ROUNDS="${RACE_ROUNDS:-8}"
+race_archived=0; race_deleted=0; race_order_rejected=0; race_lost=0; race_5xx=0
+for r in $(seq 1 "$RACE_ROUNDS"); do
+  RC=$(curl -s -H "$(auth)" -H 'Content-Type: application/json' -H 'X-Forwarded-For: 10.99.0.1' \
+    -d "{\"name\":\"رقابت $r\",\"phone\":\"09120000078\"}" "$BASE_URL/api/customers")
+  RCID=$(echo "$RC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+  [ -n "$RCID" ] || { bad "ساخت مشتری رقابت $r ناموفق"; continue; }
+  # دو درخواست «واقعاً هم‌زمان» — هر دو در پس‌زمینه، سپس wait
+  TF1="$(mktemp)"; TF2="$(mktemp)"
+  curl -s -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/customers/$RCID" > "$TF1" &
+  D_PID=$!
+  curl -s -w '\n%{http_code}' -H "$(auth)" -H 'Content-Type: application/json' -H 'X-Forwarded-For: 10.99.0.1' \
+    -d "{\"customerId\":\"$RCID\",\"title\":\"رقابت $r\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"ک\",\"quantity\":1,\"price\":1000,\"discount\":0}]}" \
+    "$BASE_URL/api/orders" > "$TF2" &
+  wait "$D_PID" 2>/dev/null; wait
+  RDEL=$(cat "$TF1"); RORD=$(cat "$TF2"); rm -f "$TF1" "$TF2"
+  RORD_CODE=$(echo "$RORD" | tail -1)
+  case "$RORD_CODE" in 5*) race_5xx=$((race_5xx+1));; esac
+  if echo "$RDEL" | rg -q '"archived":false'; then
+    race_deleted=$((race_deleted+1))
+    # حذف دائمی ⇒ ثبت سفارش هم‌زمان باید رد شده باشد (۴xx) — نه سفارش بی‌مشتری
+    case "$RORD_CODE" in
+      2*) race_lost=$((race_lost+1)); bad "دور $r: مشتری حذف شد ولی سفارش ساخته شد!" ;;
+      5*) bad "دور $r: ۵xx در ثبت سفارش پس از حذف" ;;
+      *) race_order_rejected=$((race_order_rejected+1)) ;;
+    esac
+  elif echo "$RDEL" | rg -q '"archived":true'; then
+    race_archived=$((race_archived+1))
+  else
+    bad "دور $r: پاسخ نامعتبر حذف: $RDEL"
+  fi
+  # تأیید نهایی: سفارشِ ساخته‌شده باید سالم باشد و مشتریِ آن آرشیو (حذف‌نشده)
+  if echo "$RORD_CODE" | rg -q '^2'; then
+    ROID=$(echo "$RORD" | head -1 | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+    RCHK=$(curl -s -H "$(auth)" "$BASE_URL/api/orders?customerId=$RCID" | rg -qF "$ROID" && echo found || echo missing)
+    [ "$RCHK" = "found" ] || race_lost=$((race_lost+1))
+    # پاک‌سازی: اول سفارش، بعد مشتری (اگر هنوز هست)
+    curl -s -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/orders/$ROID" > /dev/null
+  fi
+  # مشتری باقی‌مانده (آرشیو/شکست حذف) — بدون سفارش دیگر حذف دائمی می‌شود
+  curl -s -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/customers/$RCID" > /dev/null
+done
+say "  (دورها: $RACE_ROUNDS — آرشیو: $race_archived، حذف دائمی: $race_deleted، سفارشِ رد‌شده: $race_order_rejected، 5xx: $race_5xx)"
+[ "$race_lost" = "0" ] && ok "هیچ سفارشی بدون مشتریِ حفظ‌شده باقی نماند (سابقه مالی سالم)" || bad "$race_lost سفارش بدون محافظت!"
+[ "$race_5xx" = "0" ] && ok "هیچ ۵xx در رقابت حذف/ثبت سفارش نبود" || bad "$race_5xx خطای سرور در رقابت"
+[ "$((race_archived + race_deleted))" = "$RACE_ROUNDS" ] && ok "هر $RACE_ROUNDS دور رقابت، پاسخ معتبر حذف/آرشیو داشت" || bad "برخی دورها پاسخ حذف نامعتبر داشتند"
+
+say "== ۹) ثبت‌نام، ورود، خروج و حفظ نشست (v1.0.10) =="
+# کد دعوت از مدیر
+INV=$(curl -s -H "$(auth)" -H 'Content-Type: application/json' -d '{}' "$BASE_URL/api/settings/invite")
+INV_CODE=$(echo "$INV" | python3 -c "import sys,json;print(json.load(sys.stdin).get('inviteCode',''))" 2>/dev/null)
+[ -n "$INV_CODE" ] && ok "کد دعوت ساخته شد" || { bad "ساخت کد دعوت: $INV"; INV_CODE=""; }
+
+NEWM="0913$(date +%s | tail -c 8)"
+JAR2="$(mktemp)"
+# ثبت‌نام — توکن باید فقط در کوکی HttpOnly باشد (نه در بدنه)
+REG=$(curl -s -w '\n%{http_code}' -c "$JAR2" -H 'Content-Type: application/json' -H "X-Forwarded-For: $IP_LOCK" \
+  -d "{\"mobile\":\"$NEWM\",\"name\":\"کاربر تست نشست\",\"password\":\"test-pass-123\",\"inviteCode\":\"$INV_CODE\"}" \
+  "$BASE_URL/api/auth/register")
+REG_CODE=$(echo "$REG" | tail -1)
+REG_BODY=$(echo "$REG" | head -1)
+check "ثبت‌نام کاربر جدید" 200 "$REG_CODE"
+if echo "$REG_BODY" | rg -q '"token"'; then bad "پاسخ ثبت‌نام حاوی token است (نباید باشد)"; else ok "پاسخ ثبت‌نام بدون توکن در بدنه"; fi
+rg -qi '#HttpOnly_' "$JAR2" && ok "کوکی ثبت‌نام HttpOnly است" || bad "کوکی ثبت‌نام HttpOnly نیست"
+
+# حفظ نشست — me با همان کوکی باید ۲۰۰ بدهد
+ME1=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR2" "$BASE_URL/api/auth/me")
+check "حفظ نشست (me با کوکی)" 200 "$ME1"
+# ورود مجدد همان کاربر (جریان ورود مستقل)
+JAR3="$(mktemp)"
+L2=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR3" -H 'Content-Type: application/json' -H "X-Forwarded-For: $IP_LOCK" \
+  -d "{\"mobile\":\"$NEWM\",\"password\":\"test-pass-123\"}" "$BASE_URL/api/auth/login")
+check "ورود کاربر تازه‌ثبت‌نام" 200 "$L2"
+# خروج — نشست ابطال می‌شود
+LO=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR3" -H 'Content-Type: application/json' -d '{}' "$BASE_URL/api/auth/logout")
+check "خروج (logout)" 200 "$LO"
+ME2=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR3" "$BASE_URL/api/auth/me")
+check "نشست پس از خروج ابطال شده (me → 401)" 401 "$ME2"
+
+# پاک‌سازی کاربر تست توسط مدیر
+UID2=$(curl -s -b "$JAR2" "$BASE_URL/api/auth/me" | python3 -c "import sys,json;print(json.load(sys.stdin).get('user',{}).get('id',''))" 2>/dev/null)
+if [ -n "$UID2" ]; then
+  DU=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/users/$UID2")
+  [ "$DU" = "200" ] || [ "$DU" = "204" ] && ok "کاربر تست پاک‌سازی شد" || bad "پاک‌سازی کاربر تست: $DU"
+fi
+rm -f "$JAR2" "$JAR3"
 
 say ""
 say "═══ نتیجه: ✅ $PASS موفق — ❌ $FAIL ناموفق ═══"

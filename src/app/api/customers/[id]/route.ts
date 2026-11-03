@@ -71,23 +71,69 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   const inScope = await findInScope(id, auth.ctx);
   if (!inScope) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
   try {
-    // ممیزی v1.0.9 — جلوگیری از حذف ناخواسته سوابق:
-    // مشتریِ دارای سفارش یا پرداخت «هرگز» سخت‌حذف نمی‌شود (حذف آبشاری سفارش‌ها/پرداخت‌ها
-    // سوابق مالی را نابود می‌کرد) — به‌جای آن آرشیو نرم می‌شود و قابل بازگردانی است.
-    // فقط مشتریِ بدون هیچ سابقه‌ای به‌صورت دائمی حذف می‌شود.
-    const [orderCount, paymentCount] = await Promise.all([
-      db.order.count({ where: { customerId: id } }),
-      db.payment.count({ where: { customerId: id } }),
-    ]);
-    if (orderCount > 0 || paymentCount > 0) {
-      const customer = await db.customer.update({
-        where: { id },
-        data: { archived: true, archivedAt: new Date() },
-      });
-      return Response.json({ ok: true, archived: true, customer });
+    // ممیزی v1.0.10 — حذف فقط در «تراکنش امن» و با پشتوانه سطح دیتابیس:
+    //  ۱) شمارش سابقه + تصمیم + حذف/آرشیو همه داخل یک تراکنش است.
+    //  ۲) کلیدهای خارجی Order/Payment→Customer اکنون ON DELETE RESTRICT اند —
+    //     یعنی حتی اگر بین شمارش و حذف، درخواست هم‌زمانِ سفارش/پرداخت ثبت شود،
+    //     خودِ دیتابیس حذف را رد می‌کند (P2003) و «هیچ سابقه مالی هرگز آبشاری
+    //     حذف نمی‌شود». در آن حالت مشتری به‌جای حذف، آرشیو می‌شود.
+    //  ۳) تضاد نوشتن هم‌زمان SQLite (P2034/P2024) ⇒ کل تراکنش تا ۳ بار تکرار می‌شود.
+    let conflict = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const result = await db.$transaction(async (tx) => {
+          const [orderCount, paymentCount] = await Promise.all([
+            tx.order.count({ where: { customerId: id } }),
+            tx.payment.count({ where: { customerId: id } }),
+          ]);
+          if (orderCount > 0 || paymentCount > 0) {
+            // مشتریِ دارای سابقه هرگز سخت‌حذف نمی‌شود — آرشیو نرم (قابل بازگردانی)
+            const customer = await tx.customer.update({
+              where: { id },
+              data: { archived: true, archivedAt: new Date() },
+            });
+            return { archived: true as const, customer };
+          }
+          await tx.customer.delete({ where: { id } });
+          return { archived: false as const, customer: null };
+        });
+        if (result.archived) {
+          return Response.json({ ok: true, archived: true, customer: result.customer });
+        }
+        return Response.json({ ok: true, archived: false });
+      } catch (e) {
+        const code = (e as { code?: string })?.code || "";
+        if (code === "P2003") {
+          // رقابت واقعی: سابقه مالی همان لحظه ثبت شد — خارج از حلقه به آرشیو می‌رویم
+          conflict = true;
+          break;
+        }
+        if (code === "P2034" || code === "P2024") {
+          conflict = true;
+          continue; // تضاد نوشتن — تلاش مجدد کل تراکنش
+        }
+        throw e;
+      }
     }
-    await db.customer.delete({ where: { id } });
-    return Response.json({ ok: true, archived: false });
+    if (conflict) {
+      // تصمیم نهایی بر اساس وضعیت «الان» دیتابیس — هیچ داده‌ای از دست نمی‌رود
+      const [orderCount, paymentCount] = await Promise.all([
+        db.order.count({ where: { customerId: id } }),
+        db.payment.count({ where: { customerId: id } }),
+      ]);
+      if (orderCount > 0 || paymentCount > 0) {
+        const customer = await db.customer.update({
+          where: { id },
+          data: { archived: true, archivedAt: new Date() },
+        });
+        return Response.json({ ok: true, archived: true, customer });
+      }
+      return Response.json(
+        { error: "حذف مشتری به‌دلیل هم‌زمانی درخواست‌ها انجام نشد — لطفاً دوباره تلاش کنید" },
+        { status: 409 }
+      );
+    }
+    return Response.json({ error: "خطا در حذف مشتری" }, { status: 500 });
   } catch {
     return Response.json({ error: "خطا در حذف مشتری" }, { status: 500 });
   }

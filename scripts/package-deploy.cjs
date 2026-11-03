@@ -88,6 +88,18 @@ for (const d of sensitive) {
   const p = path.join(STAGE, d);
   if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
 }
+// ممیزی v1.0.10 — آرتیفکت‌های runtime داخل Standalone هم ممنوع‌اند:
+// اگر سرور زمانی از داخل .next/standalone اجرا شده باشد (مثل تست محلی)،
+// پشتیبان‌گیر خودکار دیتابیس را در cwd/db کپی می‌کند — این کپی هرگز
+// نباید وارد ZIP شود (اسکن محرمانگی هم به‌عنوان لایه دوم می‌گیرد)
+const standaloneRuntimeArtifacts = ["db", "keys", "backups", "download"];
+for (const d of standaloneRuntimeArtifacts) {
+  const p = path.join(STAGE, ".next", "standalone", d);
+  if (fs.existsSync(p)) {
+    fs.rmSync(p, { recursive: true, force: true });
+    console.log("[vizito-deploy] ✔ آرتیفکت runtime حذف شد از Standalone: " + d + "/");
+  }
+}
 // حذف باینری‌های musl — cPanel/Passenger همیشه گنو/گلیبک است (RHEL-فمیلی) و musl هرگز لود نمی‌شود
 const muslDirs = [
   path.join(STAGE, ".next", "standalone", "node_modules", "@img", "sharp-linuxmusl-x64"),
@@ -120,22 +132,17 @@ const migDirs = fs
   .filter((d) => d.isDirectory() && /^\d{14}_/.test(d.name));
 if (migDirs.length === 0) die("هیچ پوشه مهاجرتی (NNNNNNNNNNNNNN_*) در prisma/migrations نیست");
 
-// ── باینری‌های پلتفرم هدف (Linux x64 / glibc) در خود بسته ──
+// ── باینری‌های پلتفرم هدف (Linux x64 / glibc) در خود بسته — اعتبارسنجی عمیق ELF/GLIBC ──
+// ممیزی v1.0.10: ساختار ELF + حداکثر GLIBC هر باینری پارس می‌شود (نه فقط وجود پوشه)
 const stageNm = path.join(STAGE, ".next", "standalone", "node_modules");
-const stagePrisma = path.join(stageNm, ".prisma", "client");
-const stageEngines = fs.existsSync(stagePrisma)
-  ? fs.readdirSync(stagePrisma).filter((f) => /^libquery_engine-.*\.so(\.node)?$/.test(f))
-  : [];
-if (stageEngines.length === 0) {
-  die("موتور کوئری لینوکسی Prisma در بسته نیست — بسته روی هاست بالا نمی‌آید (Build را روی لینوکس بگیرید)");
+const { validateLinuxBinaries, limitationsLine } = require("./validate-linux-binaries.cjs");
+console.log(limitationsLine("[vizito-deploy]"));
+try {
+  const binReport = validateLinuxBinaries(stageNm, "[vizito-deploy]");
+  binReport.forEach((l) => console.log(l));
+} catch (e) {
+  die(e && e.message);
 }
-for (const d of ["@img/sharp-linux-x64", "@img/sharp-libvips-linux-x64"]) {
-  const p = path.join(stageNm, ...d.split("/"));
-  const files = fs.existsSync(p) ? fs.readdirSync(p).filter((f) => !f.startsWith(".")) : [];
-  if (files.length === 0) die("باینری لینوکسی sharp («" + d + "») در بسته نیست");
-}
-console.log("[vizito-deploy] ✔ موتورهای Prisma: " + stageEngines.join(", "));
-console.log("[vizito-deploy] ✔ باینری‌های sharp لینوکسی x64 موجود است");
 console.log("[vizito-deploy] ✔ " + migDirs.length + " مهاجرت دیتابیس همراه بسته است: " + migDirs.map((d) => d.name).join(", "));
 
 console.log("[vizito-deploy] ۶/۶ اسکن محرمانگی بسته قبل از ZIP ...");

@@ -91,3 +91,8 @@ server.log
 
 # بیلد آزمایشی/انتشار (خروجی next build با distDir سفارشی)
 /.next-release/
+
+# فایل‌های جانبی SQLite WAL — runtime artifacts، هرگز commit نمی‌شوند
+db/*.db-shm
+db/*.db-wal
+db/custom.db

@@ -180,6 +180,11 @@ export async function POST(req: NextRequest) {
     });
     return Response.json(order, { status: 201 });
   } catch (e) {
+    // ممیزی v1.0.10 — رقابت هم‌زمان: مشتری بین بررسی و ثبت، حذف/آرشیو شده است
+    // (FK حالا RESTRICT است) — پیام واضح به‌جای خطای 500؛ هیچ داده‌ای خراب نمی‌شود
+    if ((e as { code?: string })?.code === "P2003") {
+      return Response.json({ error: "مشتری یافت نشد یا هم‌اکنون حذف/آرشیو شده است" }, { status: 404 });
+    }
     console.error("create order error", e);
     return Response.json({ error: "خطا در ثبت سفارش" }, { status: 500 });
   }

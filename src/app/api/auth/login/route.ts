@@ -4,6 +4,7 @@ import { newToken, verifyPasswordSafe, tooMany, sessionCookie, csrfGate } from "
 import {
   dbRateLimit,
   dbRateLimitCount,
+  dbRateLimitReset,
   dbRetryAfterSeconds,
   getClientIp,
 } from "@/lib/rate-limit";
@@ -49,10 +50,21 @@ export async function POST(req: NextRequest) {
     // تأیید با هم‌زمان‌سازی زمانی — وقتی کاربر وجود ندارد هم همان هزینه رمزنگاری پرداخت می‌شود
     const ok = await verifyPasswordSafe(password, user?.password ?? null);
     if (!user || !ok) {
-      // فقط تلاش ناموفق شمرده می‌شود
-      await dbRateLimit(failKey, 8, 10 * 60 * 1000);
+      // فقط تلاش ناموفق شمرده می‌شود — افزایش اتمیک (updateMany شرطی):
+      // در انفجار موازیِ ۱۶ تایی، شمارنده یک‌جا از ۸ می‌گذرد و پاسخ درخواست‌های
+      // ۹ به بعد «۴۲۹» است (نه ۴۰۱) — یعنی سقف تلاش ناموفق حتی زیر رقابت هم
+      // به‌صورت پاسخ مؤثر اعمال می‌شود، نه فقط در ثبت شمارنده (ممیزی v1.0.10).
+      if (!(await dbRateLimit(failKey, 8, 10 * 60 * 1000))) {
+        return tooMany(
+          await dbRetryAfterSeconds(failKey),
+          "تلاش‌های ناموفق زیاد — ۱۰ دقیقه دیگر دوباره تلاش کنید"
+        );
+      }
       return Response.json(WRONG_CREDENTIALS, { status: 401 });
     }
+
+    // ورود موفق — سطل تلاش ناموفقِ همین (شماره+IP) پاک می‌شود (ضد قفل باقی‌مانده)
+    await dbRateLimitReset(failKey);
 
     const token = await newToken(user.id, user.role, req.headers.get("user-agent"));
     // امنیت: توکن «فقط» در کوکی HttpOnly تحویل می‌شود — هیچ توکنی در بدنه پاسخ

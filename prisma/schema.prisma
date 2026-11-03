@@ -106,7 +106,9 @@ model Product {
 model Order {
   id              String      @id @default(cuid())
   customerId      String
-  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // ممیزی v1.0.10 — Restrict: حذف مشتریِ دارای سفارش در سطح دیتابیس هم ممنوع است؛
+  // حتی در رقابت هم‌زمان (حذف + ثبت سفارش) هیچ سفارشی آبشاری حذف نمی‌شود
+  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
   createdByUserId String?
   createdByUser   User?       @relation(fields: [createdByUserId], references: [id])
   title           String?
@@ -126,7 +128,8 @@ model Order {
 model Payment {
   id              String    @id @default(cuid())
   customerId      String
-  customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // ممیزی v1.0.10 — Restrict: سوابق مالی (پرداخت‌ها) هرگز با حذف مشتری از بین نمی‌روند
+  customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
   orderId         String?
   order           Order?    @relation(fields: [orderId], references: [id])
   type            String // CASH | CHECK | RECEIPT

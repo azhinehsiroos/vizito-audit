@@ -48,6 +48,7 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
   ignores: ["node_modules/**", ".next/**", ".next-release/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills",
     // فایل‌های CommonJS راه‌اندازی Production — با node مستقیم اجرا می‌شوند و جزو باندل Next نیستند
     "server.cjs", "scripts/package-standalone.cjs", "scripts/package-deploy.cjs", "scripts/migrate-sqlite.cjs",
+    "scripts/validate-linux-binaries.cjs", "scripts/migrate-e2e.cjs",
     // خروجی‌های کمکی/آزمون محلی (gitignore شده)
     "download/**"]
 }];

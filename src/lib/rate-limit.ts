@@ -143,6 +143,24 @@ export async function dbRateLimit(key: string, limit: number, windowMs: number):
   }
 }
 
+/**
+ * ریست سطل «تلاش ناموفق» پس از ورود موفق (ممیزی v1.0.10):
+ *  - قفل فقط تا وقتی معنا دارد که تلاش‌های ناموفق انباشته شده باشد؛
+ *    ورود موفقِ همان (شماره+IP) سطل را پاک می‌کند تا کاربر واقعی بعد از
+ *    چند اشتباهِ معمول، در همان پنجره زنده هم بتواند ادامه دهد.
+ *  - ضدمهاجم: این ریست فقط با «رمز درست» قابل اجراست، پس مهاجم نمی‌تواند
+ *    از آن برای پاک‌کردن سطل قربانی سوءاستفاده کند.
+ *  - بهترین‌تلاش (best-effort): خطا خورده و بی‌صدا رد می‌شود — ورود موفق
+ *    هرگز به‌خاطر خطای پاک‌سازی سطل شکست نمی‌خورد.
+ */
+export async function dbRateLimitReset(key: string): Promise<void> {
+  try {
+    await db.rateLimitBucket.deleteMany({ where: { key } });
+  } catch {
+    // عمداً بی‌صدا — ریست سطل پس از ورود موفق اجباری نیست
+  }
+}
+
 /** تعداد تلاش‌های ثبت‌شده در پنجره زنده فعلی — بدون افزایش */
 export async function dbRateLimitCount(key: string): Promise<number> {
   const b = await db.rateLimitBucket.findUnique({ where: { key }, select: { count: true, expiresAt: true } });
