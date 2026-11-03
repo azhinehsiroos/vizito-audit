@@ -13,6 +13,7 @@
  *   npm run license:gen -- --name "نام مشتری" --mobile 09121234567 --months 12 --install-id ab12cd34
  *   npm run license:gen -- --name "..." --days 30  --install-id ...
  *   npm run license:gen -- --name "..." --until 2027-01-01 --install-id ...
+ *   npm run license:gen -- --name "..." --permanent --install-id ...   (لایسنس دائمی — بدون انقضا، e=0)
  */
 
 import crypto from "node:crypto";
@@ -47,9 +48,13 @@ const installId = arg("install-id") || "";
 const months = arg("months") ? Number(arg("months")) : undefined;
 const days = arg("days") ? Number(arg("days")) : undefined;
 const until = arg("until");
+// لایسنس دائمی (v1.1.0): پرچم --permanent → payload.e = 0 — بدون تاریخ انقضا،
+// خارج از چرخه مهلت ۳۰ روزه/حذف کنترل‌شده؛ شارژ مجدد برای کلید دائمی رد می‌شود.
+const permanent = process.argv.includes("--permanent");
 
 let expiresAt = null;
-if (until) expiresAt = new Date(until);
+if (permanent) expiresAt = new Date(0); // epoch = e:0 = دائمی در موتور لایسنس
+else if (until) expiresAt = new Date(until);
 else if (months && months > 0) expiresAt = new Date(Date.now() + months * 30 * 86_400_000);
 else if (days && days > 0) expiresAt = new Date(Date.now() + days * 86_400_000);
 
@@ -58,6 +63,7 @@ const usage = () => {
   console.log('  npm run license:gen -- --name "نام مشتری" --mobile 09121234567 --months 12 --install-id ab12cd34');
   console.log("  npm run license:gen -- --name ... --days 30 --install-id ...");
   console.log("  npm run license:gen -- --name ... --until 2027-01-01 --install-id ...");
+  console.log("  npm run license:gen -- --name ... --permanent --install-id ...");
 };
 
 // امنیت: کلید بدون installId روی هر سروری کار می‌کند — صدورش ممنوع است
@@ -91,7 +97,11 @@ try {
   const sig = b64url(crypto.sign(null, Buffer.from(body), crypto.createPrivateKey(pem)));
   const key = `VZT2.${body}.${sig}`;
   console.log("کلید لایسنس برای:", `${name} (${mobile})`);
-  console.log("انقضا:", expiresAt.toISOString().slice(0, 10));
+  console.log(
+    expiresAt.getTime() === 0
+      ? "انقضا: دائمی (بدون تاریخ انقضا — e=0)"
+      : `انقضا: ${expiresAt.toISOString().slice(0, 10)}`
+  );
   console.log("قفل نصب:", installId);
   console.log("");
   console.log(key);

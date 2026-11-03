@@ -93,12 +93,8 @@ export async function POST(req: NextRequest) {
       const provided = setupKey.length > 0;
       const expectedSet = expected.length > 0;
       const match = expectedSet && provided && safeEq(setupKey, expected);
-      // ⚠️ عیب‌یابی موقت (خطای OWNER_KEY_REQUIRED روی هاست) — فقط وضعیت بولی،
-      // هرگز مقدار کلید/رمز/توکن لاگ نمی‌شود. پس از تشخیص، این بلاک حذف شود.
-      console.error(
-        "register owner-key diag:",
-        JSON.stringify({ ownerMobile: true, expectedSet, provided, match })
-      );
+      // امنیت: هیچ وضعیتی از کلید/رمز/توکن لاگ نمی‌شود — فقط نتیجه نهایی به‌صورت
+      // پاسخ ۴۰۳ بدون جزئیات برگردانده می‌شود (حتی بولی‌های عیب‌یابی هم لاگ نمی‌شوند).
       if (!match) {
         return Response.json(
           { error: "این شماره فقط با «کلید راه‌اندازی سازنده» قابل ثبت‌نام است", code: "OWNER_KEY_REQUIRED" },

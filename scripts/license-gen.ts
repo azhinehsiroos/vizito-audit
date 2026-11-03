@@ -9,6 +9,7 @@
  *   bun run license:gen -- --name "فروشگاه x" --mobile 0912... --days 30
  *   bun run license:gen -- --name "..." --mobile "..." --until 2027-01-01
  *   bun run license:gen -- ... --install-id ab12cd34...   (قفل کلید به یک نصب خاص)
+ *   bun run license:gen -- ... --permanent --install-id ...   (لایسنس دائمی — بدون انقضا، e=0)
  */
 import { makeLicenseKey } from "../src/lib/license";
 
@@ -23,9 +24,13 @@ const installId = arg("install-id") || "";
 const months = arg("months") ? Number(arg("months")) : undefined;
 const days = arg("days") ? Number(arg("days")) : undefined;
 const until = arg("until");
+// لایسنس دائمی (v1.1.0): پرچم --permanent → payload.e = 0 — بدون تاریخ انقضا،
+// خارج از چرخه مهلت ۳۰ روزه/حذف کنترل‌شده؛ شارژ مجدد برای کلید دائمی رد می‌شود.
+const permanent = process.argv.includes("--permanent");
 
 let expiresAt: Date | null = null;
-if (until) expiresAt = new Date(until);
+if (permanent) expiresAt = new Date(0); // epoch = e:0 = دائمی در موتور لایسنس
+else if (until) expiresAt = new Date(until);
 else if (months && months > 0) expiresAt = new Date(Date.now() + months * 30 * 86_400_000);
 else if (days && days > 0) expiresAt = new Date(Date.now() + days * 86_400_000);
 
@@ -34,6 +39,7 @@ if (!installId) {
   console.error("خطا: --install-id الزامی است (شناسه نصب مشتری) — کلید بدون قفل نصب صادر نمی‌شود");
   console.log("استفاده:");
   console.log('  bun run license:gen -- --name "نام مشتری" --mobile 09121234567 --months 12 --install-id ab12cd34');
+  console.log('  bun run license:gen -- --name "..." --permanent --install-id ...');
   process.exit(1);
 }
 
@@ -42,13 +48,18 @@ if (!name || !expiresAt || Number.isNaN(expiresAt.getTime())) {
   console.log('  bun run license:gen -- --name "نام مشتری" --mobile 09121234567 --months 12 --install-id ab12cd34');
   console.log("  bun run license:gen -- --name ... --days 30 --install-id ...");
   console.log("  bun run license:gen -- --name ... --until 2027-01-01 --install-id ...");
+  console.log("  bun run license:gen -- --name ... --permanent --install-id ...");
   process.exit(1);
 }
 
 try {
   const key = makeLicenseKey(name, mobile, expiresAt, installId);
   console.log("کلید لایسنس برای:", `${name} (${mobile})`);
-  console.log("انقضا:", expiresAt.toISOString().slice(0, 10));
+  console.log(
+    expiresAt.getTime() === 0
+      ? "انقضا: دائمی (بدون تاریخ انقضا — e=0)"
+      : `انقضا: ${expiresAt.toISOString().slice(0, 10)}`
+  );
   if (installId) console.log("قفل نصب:", installId);
   console.log("");
   console.log(key);

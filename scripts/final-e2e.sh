@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# VIZITO — تست جامع نهایی v1.1.0 (دو سرور مستقل با دیتابیس موقت)
+# VIZITO — تست جامع نهایی v1.1.1 (دو سرور مستقل با دیتابیس موقت)
 #   سرور A (بدون مالک): ترِیال، قفل‌ها، معافیت پرسنل، مهلت ۳۰ روزه، حذف کنترل‌شده، لایسنس دائمی
 #   سرور B (با مالک):   امکانات مالک (دفتر فروش، شارژ، توقف حذف، پیام‌ها، چرخه حیات)
+#   سناریوهای ثبت‌نام اولیه: بدون کلید، کلید غلط، تکراری، سوءاستفاده از توکن،
+#     مالک بدون/با کلید غلط، بازسازی مالک (هرگز مالک دوم)، بهداشت لاگ کلیدها
 # -----------------------------------------------------------------------------
 # اجرا: بعد از «bun run build» →  bash scripts/final-e2e.sh
 # هیچ داده‌ای از دیتابیس اصلی تغییر نمی‌کند؛ همه مقادیر حساس هنگام اجرا تصادفی‌اند
@@ -90,6 +92,18 @@ DBA="$TMP/a.db"
 A_PID=$(start_server a 3100 "$DBA") || exit 1
 wait_up 3100 && ok "سرور A آماده شد" || { bad "سرور A بالا نیامد"; tail -15 "$TMP/a.log"; exit 1; }
 
+XFF_REG() { # XFF_REG <port> <xff-ip> <json> — ثبت‌نام با IP متمایز (سهمیه نرخ مستقل برای هر سناریو)
+  curl -s --max-time 15 -H 'Content-Type: application/json' -H "X-Forwarded-For: $2" -d "$3" "http://127.0.0.1:$1/api/auth/register"
+}
+
+echo "== ۰) سناریوهای امنیتی ثبت‌نام اولیه (نصب تازه) =="
+# شماره متمایز برای سناریوهای منفی — سهمیه reg-m هر شماره (۳ در ۱۰ دقیقه) مصرف نشود
+NEG_MOBILE="0917$(shuf -i 1000000-9999999 -n 1)"
+R=$(XFF_REG 3100 198.51.100.11 "{\"mobile\":\"$NEG_MOBILE\",\"name\":\"بدون کلید\",\"password\":\"$PASSWORD\"}")
+contains "ثبت‌نام اولین مدیر بدون SETUP_TOKEN رد شد (403)" "SETUP_TOKEN_REQUIRED" "$R"
+R=$(XFF_REG 3100 198.51.100.12 "{\"mobile\":\"$NEG_MOBILE\",\"name\":\"کلید غلط\",\"password\":\"$PASSWORD\",\"setupToken\":\"wrong-token-xyz\"}")
+contains "ثبت‌نام با SETUP_TOKEN نادرست رد شد (403)" "SETUP_TOKEN_REQUIRED" "$R"
+
 echo "== ۱) نصب تازه + اولین مدیر + ترِیال ۲۴ ساعته =="
 check "نصب تازه شناسایی شد" "True" "$(jget "$(curl -s http://127.0.0.1:3100/api/license/status)" "d['freshInstall']")"
 R=$(rq 3100 none POST /api/auth/register "{\"mobile\":\"$ADMIN_MOBILE\",\"name\":\"مدیر خریدار\",\"password\":\"$PASSWORD\",\"setupToken\":\"$SETUP_TOKEN\"}")
@@ -98,6 +112,12 @@ rq 3100 admin POST /api/auth/login "{\"mobile\":\"$ADMIN_MOBILE\",\"password\":\
 R=$(curl -s http://127.0.0.1:3100/api/license/status)
 check "ترِیال ۲۴ ساعته فعال شد" "True" "$(jget "$R" "d['trial']")"
 check "روزهای باقی‌مانده ترِیال ≥ 0" "True" "$(jget "$R" "str((d['daysLeft'] or 0) >= 0)")"
+
+C=$(XFF_REG 3100 198.51.100.13 "{\"mobile\":\"$ADMIN_MOBILE\",\"name\":\"تکراری\",\"password\":\"$PASSWORD\",\"setupToken\":\"$SETUP_TOKEN\"}")
+contains "ثبت‌نام تکراری همان شماره (حتی با SETUP_TOKEN درست) → 409" "ثبت‌نام انجام نشد" "$C"
+EXPL_MOBILE="0915$(shuf -i 1000000-9999999 -n 1)"
+R=$(XFF_REG 3100 198.51.100.14 "{\"mobile\":\"$EXPL_MOBILE\",\"name\":\"سوءاستفاده از توکن\",\"password\":\"$PASSWORD\",\"setupToken\":\"$SETUP_TOKEN\"}")
+contains "SETUP_TOKEN پس از اولین ثبت‌نام برای شماره جدید بی‌اثر است (کد دعوت لازم)" "کد دعوت" "$R"
 
 echo "== ۲) کاربر عمومی + ترِیال شخصی ۲۴ ساعته =="
 rq 3100 admin POST /api/settings/invite '{}' >/dev/null
@@ -228,9 +248,16 @@ kill $A_PID 2>/dev/null
 
 # ===========================================================================
 echo "############ سرور B — با مالک (امکانات مالک) ############"
+OWNER2_MOBILE="0918$(shuf -i 1000000-9999999 -n 1)" # شماره فریبنده برای سناریوهای منفی مالک (هرگز حساب نمی‌سازد)
 DBB="$TMP/b.db"
-B_PID=$(start_server b 3101 "$DBB" OWNER_MOBILES="$OWNER_MOBILE") || exit 1
+B_PID=$(start_server b 3101 "$DBB" OWNER_MOBILES="$OWNER_MOBILE,$OWNER2_MOBILE") || exit 1
 wait_up 3101 && ok "سرور B آماده شد" || { bad "سرور B بالا نیامد"; tail -15 "$TMP/b.log"; exit 1; }
+
+echo "== ۱۰−) سناریوهای امنیتی ثبت‌نام مالک =="
+R=$(XFF_REG 3101 198.51.100.21 "{\"mobile\":\"$OWNER2_MOBILE\",\"name\":\"بدون کلید سازنده\",\"password\":\"$PASSWORD\"}")
+contains "ثبت‌نام مالک بدون OWNER_SETUP_KEY رد شد (403)" "OWNER_KEY_REQUIRED" "$R"
+R=$(XFF_REG 3101 198.51.100.22 "{\"mobile\":\"$OWNER2_MOBILE\",\"name\":\"کلید سازنده غلط\",\"password\":\"$PASSWORD\",\"setupKey\":\"wrong-owner-key-xyz\"}")
+contains "ثبت‌نام مالک با کلید نادرست رد شد (403)" "OWNER_KEY_REQUIRED" "$R"
 
 echo "== ۱۱) مالک + پرسنل =="
 R=$(rq 3101 none POST /api/auth/register "{\"mobile\":\"$OWNER_MOBILE\",\"name\":\"مالک برنامه\",\"password\":\"$PASSWORD\",\"setupKey\":\"$OWNER_SETUP_KEY\"}")
@@ -301,12 +328,34 @@ check "ادامه حذف خودکار" "False" "$(jget "$R" "d.get('paused')")"
 C=$(code 3101 staff GET /api/admin/lifecycle)
 check "غیرمالک به چرخه حیات دسترسی ندارد (403)" "403" "$C"
 
+echo "== ۱۴−) بازسازی مالک = هرگز مالک دوم ساخته نمی‌شود =="
+R=$(rq 3101 none POST /api/auth/register "{\"mobile\":\"$OWNER_MOBILE\",\"name\":\"مالک برنامه\",\"password\":\"$PASSWORD\",\"setupKey\":\"$OWNER_SETUP_KEY\"}")
+check "ثبت‌نام مجدد مالک با کلید درست → ارتقای همان حساب (upgraded)" "True" "$(jget "$R" "d.get('upgraded')")"
+rq 3101 owner POST /api/auth/login "{\"mobile\":\"$OWNER_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+R=$(rq 3101 owner GET /api/auth/me)
+check "نشست تازه مالک پس از ارتقا برقرار است (isOwner)" "True" "$(jget "$R" "d['isOwner']")"
+R=$(rq 3101 owner GET /api/users)
+check "فقط یک حساب با شماره مالک وجود دارد (مالک دوم ساخته نشد)" "1" "$(jget "$R" "sum(1 for u in d if u['mobile']=='$OWNER_MOBILE')")"
+
 echo "== ۱۵) تست‌های امنیتی قبلی (security-e2e.sh روی سرور B) =="
 if BASE_URL="http://127.0.0.1:3101" MOBILE="$OWNER_MOBILE" PASSWORD="$PASSWORD" bash scripts/security-e2e.sh > "$TMP/sec.log" 2>&1; then
-  ok "security-e2e.sh کامل پاس شد ($(grep -c '✔' "$TMP/sec.log" 2>/dev/null || echo '?') چک)"
+  SECN=$(grep -c '✅' "$TMP/sec.log" 2>/dev/null); SECN=${SECN:-?}
+  ok "security-e2e.sh کامل پاس شد ($SECN چک)"
 else
   bad "security-e2e.sh شکست خورد"; tail -25 "$TMP/sec.log"
 fi
+echo "== ۱۶) بهداشت لاگ — هیچ وضعیت/مقدار کلیدی لاگ نمی‌شود =="
+if grep -q "owner-key diag" "$TMP/a.log" "$TMP/b.log" 2>/dev/null; then
+  bad "لاگ عیب‌یابی موقت owner-key هنوز در خروجی سرور هست"
+else
+  ok "هیچ لاگ عیب‌یابی کلید سازنده در لاگ سرورها نیست"
+fi
+if grep -qF -- "$SETUP_TOKEN" "$TMP/a.log" "$TMP/b.log" 2>/dev/null || grep -qF -- "$OWNER_SETUP_KEY" "$TMP/a.log" "$TMP/b.log" 2>/dev/null; then
+  bad "مقدار SETUP_TOKEN/OWNER_SETUP_KEY در لاگ سرور دیده شد (نشتی!)"
+else
+  ok "هیچ مقدار SETUP_TOKEN/OWNER_SETUP_KEY در لاگ سرورها ثبت نشده"
+fi
+
 kill $B_PID 2>/dev/null
 
 echo
