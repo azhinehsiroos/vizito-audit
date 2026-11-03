@@ -1,0 +1,184 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.8rem;
+  /* پالت رسمی و لوکس ویزیتو: پورسلین سرد + طلایی آنتیک مات */
+  --background: #f7f5f2;
+  --foreground: #181512;
+  --card: #ffffff;
+  --card-foreground: #181512;
+  --popover: #ffffff;
+  --popover-foreground: #181512;
+  --primary: #8a6a30;
+  --primary-foreground: #fbf8ef;
+  --secondary: #ece9e1;
+  --secondary-foreground: #3a352c;
+  --muted: #f0ede7;
+  --muted-foreground: #6f6759;
+  --accent: #efe9dc;
+  --accent-foreground: #55461f;
+  --destructive: #b3261e;
+  --border: #e2ddd1;
+  --input: #dcd5c6;
+  --ring: #a1844c;
+  --chart-1: #8a6a30;
+  --chart-2: #5f6f55;
+  --chart-3: #9c5a40;
+  --chart-4: #7d7462;
+  --chart-5: #a3805c;
+  --sidebar: #fbfaf7;
+  --sidebar-foreground: #181512;
+  --sidebar-primary: #8a6a30;
+  --sidebar-primary-foreground: #fbf8ef;
+  --sidebar-accent: #efe9dc;
+  --sidebar-accent-foreground: #55461f;
+  --sidebar-border: #e2ddd1;
+  --sidebar-ring: #a1844c;
+}
+
+.dark {
+  --background: #0a0908;
+  --foreground: #ece5d6;
+  --card: #14110d;
+  --card-foreground: #ece5d6;
+  --popover: #181510;
+  --popover-foreground: #ece5d6;
+  --primary: #d3b26c;
+  --primary-foreground: #1c1608;
+  --secondary: #1f1b15;
+  --secondary-foreground: #d6cfbf;
+  --muted: #1d1913;
+  --muted-foreground: #9a9182;
+  --accent: #262019;
+  --accent-foreground: #e0cb9c;
+  --destructive: #e5544b;
+  --border: rgba(230, 218, 192, 0.10);
+  --input: rgba(230, 218, 192, 0.14);
+  --ring: #d3b26c;
+  --chart-1: #d3b26c;
+  --chart-2: #8f9c80;
+  --chart-3: #c98668;
+  --chart-4: #a89f88;
+  --chart-5: #c2a17e;
+  --sidebar: #120f0c;
+  --sidebar-foreground: #ece5d6;
+  --sidebar-primary: #d3b26c;
+  --sidebar-primary-foreground: #1c1608;
+  --sidebar-accent: #262019;
+  --sidebar-accent-foreground: #e0cb9c;
+  --sidebar-border: rgba(230, 218, 192, 0.10);
+  --sidebar-ring: #d3b26c;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  /* اعداد در فرم‌ها لاتین بمانند */
+  input[inputmode="numeric"],
+  input[type="number"],
+  input[type="tel"] {
+    direction: ltr;
+    text-align: right;
+  }
+}
+
+/* اسکرول‌بار سفارشی */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(138, 106, 48, 0.35);
+  border-radius: 999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(211, 178, 108, 0.35);
+}
+
+.app-fade {
+  animation: appFade 0.25s ease;
+}
+@keyframes appFade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* برچسب برند لاتین */
+.brand-word {
+  font-family: "Vazirmatn", Tahoma, sans-serif;
+  letter-spacing: 0.32em;
+  text-indent: 0.32em; /* جبران فاصله آخر در وسط‌چین */
+  font-weight: 300;
+}
+
+/* کارت‌های رسمی‌تر: سایه بسیار ملایم و لبه ظریف */
+@layer components {
+  [data-slot="card"] {
+    box-shadow:
+      0 1px 2px rgba(24, 21, 18, 0.04),
+      0 4px 16px -8px rgba(24, 21, 18, 0.06);
+  }
+  .dark [data-slot="card"] {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 6px 20px -10px rgba(0, 0, 0, 0.5);
+  }
+}

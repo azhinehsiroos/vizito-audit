@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ویزیتو</string>
+
+    <!--
+      آدرس سرور وب‌اپلیکیشن ویزیتو.
+      ⚠ مقدار پیش‌فرض یک «نشانگر نمونه» است — APK با این آدرس به هیچ سروری وصل نمی‌شود
+      و ورک‌فلو هم اجازه انتشار این حالت در Releases را نمی‌دهد.
+      آدرس واقعی هنگام Build تعیین می‌شود:
+        - تب Actions → اجرای دستی ورک‌فلوی «ساخت APK ویزیتو» → فیلد server_url
+          (آدرس HTTPS دامنه خودتان — مثال: https://example.com)
+        - یا با ویرایش همین مقدار و پوش کردن پروژه.
+      مثال:  https://example.com  یا  https://example.com:8443
+    -->
+    <string name="server_url" translatable="false">https://SERVER-ADDRESS-NOT-SET.example.com/</string>
+
+    <string name="download_started">دانلود آغاز شد…</string>
+    <string name="download_failed">دانلود فایل ناموفق بود</string>
+    <string name="downloading_file">در حال دانلود…</string>
+    <string name="saved_to_downloads">فایل در پوشه Downloads ذخیره شد</string>
+    <!-- Toast مسیر دقیق ذخیره: «در پوشه ویزیتو ذخیره شد: Download/Vizito/<file>» -->
+    <string name="saved_to_vizito">در پوشه ویزیتو ذخیره شد:</string>
+    <string name="download_started_vizito">دانلود آغاز شد؛ ذخیره در پوشه ویزیتو:</string>
+    <string name="saved_to_app_storage">فایل در حافظه اختصاصی برنامه ذخیره شد</string>
+    <string name="storage_permission_needed">برای ذخیره فایل، دسترسی حافظه لازم است</string>
+</resources>

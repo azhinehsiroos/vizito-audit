@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Vizito" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/vizito_dark</item>
+        <item name="android:statusBarColor">@color/vizito_dark</item>
+        <item name="android:navigationBarColor">@color/vizito_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Vizito.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/vizito_dark</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_fg</item>
+        <item name="windowSplashScreenAnimationDuration">400</item>
+        <item name="postSplashScreenTheme">@style/Theme.Vizito</item>
+    </style>
+</resources>

@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+  // سازگاری با هاست اشتراکی (GLIBC 2.28 = EL8 / Debian 10 ⇒ OpenSSL 1.1.x):
+  // در زمان generate، موتور کوئری «همه پلتفرم‌های این فهرست» در
+  // node_modules/.prisma/client قرار می‌گیرد و در زمان اجرا، پلتفرم درست
+  // به‌صورت خودکار انتخاب می‌شود. evidence: هاست cPanel با glibc 2.28 فقط با
+  // موتورهای openssl-1.1.x کار می‌کند؛ نبودِ آن‌ها یعنی خطای Query engine
+  // not found در اولین کوئری روی هاست.
+  binaryTargets = ["native", "rhel-openssl-1.1.x", "debian-openssl-1.1.x", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  mobile        String         @unique
+  name          String
+  company       String?
+  password      String
+  role          String         @default("USER") // ADMIN | USER
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  grants        AccessGrant[]
+  orders        Order[]
+  payments      Payment[]
+  sessions      AuthSession[]
+  notifications Notification[]
+}
+
+// نشست‌های سمت سرور — امکان ابطال توکن‌ها (خروج، ریست، حذف کاربر)
+model AuthSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique // SHA-256 of token — خود توکن هرگز ذخیره نمی‌شود
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+}
+
+// دسترسی زمان‌دار مدیر به کاربران
+model AccessGrant {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sections  String   @default("[]") // JSON array of section keys
+  expiresAt DateTime
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Customer {
+  id         String    @id @default(cuid())
+  name       String
+  company    String?
+  phone      String
+  address    String?
+  nationalId String?
+  type       String    @default("STORE") // STORE | PHARMACY | SALON
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  orders     Order[]
+  payments   Payment[]
+}
+
+model ProductGroup {
+  id        String    @id @default(cuid())
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+}
+
+model Product {
+  id            String       @id @default(cuid())
+  groupId       String
+  group         ProductGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name          String
+  image         String? // data URL
+  description   String?
+  volume        String?
+  offer         String? // مثلا 1+12
+  pricePurchase Float        @default(0)
+  priceStore    Float        @default(0)
+  pricePharmacy Float        @default(0)
+  priceSalon    Float        @default(0)
+  discount      Float        @default(0) // درصد
+  minOrder      Int          @default(1) // تعداد سفارش
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  orderItems    OrderItem[]
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  customerId      String
+  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdByUserId String?
+  createdByUser   User?       @relation(fields: [createdByUserId], references: [id])
+  title           String?
+  priceType       String      @default("STORE") // STORE | PHARMACY | SALON | PURCHASE
+  status          String      @default("FINAL") // FINAL | CANCELED
+  totalAmount     Float       @default(0)
+  settlementType  String? // نحوه تسویه قید‌شده روی فاکتور: CASH | CHECK | RECEIPT
+  dueDays         Int? // سررسید تسویه (مثلا ۹۰ روزه) — روزشمار از تاریخ فاکتور
+  note            String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  items           OrderItem[]
+  payments        Payment[]
+}
+
+// ثبت تسویه حساب مشتری — نقد / چک پای‌بار / رسید
+model Payment {
+  id              String    @id @default(cuid())
+  customerId      String
+  customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orderId         String?
+  order           Order?    @relation(fields: [orderId], references: [id])
+  type            String // CASH | CHECK | RECEIPT
+  amount          Float     @default(0)
+  discountPercent Float     @default(0) // درصد تخفیف نقدی (مثلا ۸ برای ۸٪)
+  discountAmount  Float     @default(0) // مبلغ بخشیده‌شده تخفیف — برای مانده حساب جزو پرداخت محاسبه می‌شود
+  paidAt          DateTime? // تاریخ پرداخت (نقد/رسید)
+  trackingNumber  String? // شماره پیگیری واریز (نقد)
+  bankName        String? // نام بانک (چک)
+  checkNumber     String? // شماره چک
+  sayadiNumber    String? // شماره صیادی (چک)
+  settleAt        DateTime? // تاریخ سررسید/تسویه چک
+  note            String?
+  createdByUserId String?
+  createdByUser   User?     @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime  @default(now())
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id])
+  productName String
+  quantity    Float    @default(1)
+  volume      String?
+  price       Float    @default(0)
+  discount    Float    @default(0)
+  offer       String? // آفر دستی خالی که کاربر پر می‌کند
+  lineTotal   Float    @default(0)
+  rowNumber   Int      @default(1)
+  createdAt   DateTime @default(now())
+}
+
+// تنظیمات برنامه (لوگو، برند و ...)
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// محدودکننده نرخ ماندگار (برخلاف نسخه درون‌حافظه‌ای، با ری‌استارت سرور پاک نمی‌شود)
+// فقط برای مسیرهای حساس احراز هویت (ورود/ثبت‌نام) — چون در دیتابیس نوشته می‌شود
+model RateLimitBucket {
+  key       String   @id
+  count     Int      @default(0)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
+// اعلان‌ها و یادداشت‌های مدیر برای کاربران (تغییرات کالا/گروه + پیام‌ها)
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  type      String    @default("SYSTEM") // CATALOG | NOTE | SYSTEM
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+// دفتر فروش لایسنس — مشخصات خریدار + مدت + کلید تحویلی (فقط سازنده برنامه)
+model LicenseSale {
+  id            String          @id @default(cuid())
+  buyerName     String
+  buyerMobile   String
+  durationDays  Int
+  durationLabel String
+  key           String
+  price         String?
+  note          String?
+  expiresAt     DateTime? // انقضای مؤثر — با شارژ مجدد تمدید می‌شود (بدون کلید جدید)
+  createdAt     DateTime        @default(now())
+  charges       LicenseCharge[]
+}
+
+// تاریخچه شارژ/تمدید لایسنس خریدار — همان کلید، فقط تمدید انقضا
+model LicenseCharge {
+  id            String      @id @default(cuid())
+  saleId        String
+  sale          LicenseSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  addDays       Int
+  note          String?
+  createdByName String?
+  createdAt     DateTime    @default(now())
+
+  @@index([saleId, createdAt])
+}
+
+// نسخه‌های پشتیبان — فقط مدیر (فایل JSON خارج از پوشه عمومی + متادیتا در دیتابیس)
+model Backup {
+  id            String   @id @default(cuid())
+  kind          String   @default("MANUAL") // MANUAL | DAILY | WEEKLY | MONTHLY
+  fileName      String   @unique // نام فایل سمت سرور تولید می‌شود — هرگز از ورودی کاربر
+  sizeBytes     Int      @default(0)
+  counts        String   @default("{}") // JSON: تعداد رکوردها هنگام تهیه نسخه
+  createdBy     String? // فقط برای نسخه‌های دستی — شناسه مدیر
+  createdByName String?
+  createdAt     DateTime @default(now())
+}

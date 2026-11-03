@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  امنیت: اتصال به سرورهای بدون HTTPS (HTTP ساده) مسدود است تا ترافیک اپلیکیشن
+  در برابر حملات مرد میانی (MITM) محافظت شود. سرور رسمی ویزیتو HTTPS است.
+  فقط برای تست موقت در شبکه محلی (مثلاً http://192.168.x.x:3000) می‌توانید
+  cleartextTrafficPermitted را true کنید و بعد از تست حتماً به false برگردانید.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

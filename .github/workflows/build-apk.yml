@@ -1,0 +1,174 @@
+name: ساخت APK ویزیتو
+
+# این ورک‌فلو اپلیکیشن اندروید ویزیتو را می‌سازد:
+#  ۱) APK در بخش Artifacts همین اجرا آپلود می‌شود
+#  ۲) APK در بخش Releases با تگ apk-latest منتشر می‌شود (دانلود آسان)
+#  ۳) هنگام اجرای دستی (Run workflow) می‌توانید آدرس سرور را وارد کنید تا داخل APK قرار گیرد
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: 'آدرس سرور HTTPS خود را وارد کنید (اختیاری — خالی بگذارید تا آدرس فعلی strings.xml باقی بماند)'
+        required: false
+        default: ''
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: ساخت APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: دریافت سورس‌کد
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: نصب جاوا ۱۷
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: نصب Gradle 8.7
+        uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+        with:
+          gradle-version: '8.7'
+
+      # نکته: ریانرهای ubuntu-latest از قبل اندروید SDK کامل را دارند (ANDROID_HOME تنظیم شده است)
+      # و لایسنس‌ها هم پذیرفته شده‌اند؛ بنابراین نیازی به نصب SDK نیست.
+
+      - name: اعمال آدرس سرور (در صورت وارد کردن هنگام اجرای دستی)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.server_url != '' }}
+        env:
+          SERVER_URL: ${{ github.event.inputs.server_url }}
+        run: |
+          python3 - <<'EOF'
+          import os, re, sys
+          p = 'android/app/src/main/res/values/strings.xml'
+          s = open(p, encoding='utf-8').read()
+          url = os.environ['SERVER_URL'].strip()
+          if not re.match(r'^https://[A-Za-z0-9.-]+(:[0-9]{2,5})?/?$', url):
+              print('::error::آدرس سرور نامعتبر است — فقط HTTPS با نام دامنه و پورت اختیاری پذیرفته می‌شود (مثال: https://example.com یا https://example.com:8443)')
+              sys.exit(1)
+          url = url.replace('&', '&amp;')
+          s = re.sub(r'(<string name="server_url"[^>]*>).*?(</string>)',
+                     lambda m: m.group(1) + url + m.group(2), s, flags=re.S)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('server_url =>', url)
+          EOF
+
+      # اگر آدرس سرور واقعی تنظیم نشده باشد، APK فقط به‌عنوان آرتیفکت ساخته می‌شود
+      # و در Releases منتشر نمی‌شود (تا APK بدون سرور برای کاربران منتشر نشود)
+      - name: هشدار اگر آدرس سرور تنظیم نشده باشد
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.server_url != '') }}
+        run: |
+          echo "::warning::آدرس سرور (server_url) وارد نشده است — APK با آدرس نمونه ساخته می‌شود و فقط در آرتیفکت‌های همین اجرا قرار می‌گیرد، نه در Releases. برای انتشار نسخه واقعی، ورک‌فلو را به‌صورت دستی اجرا کنید و آدرس HTTPS دامنه خود را وارد کنید."
+
+      # امنیت: keystore هرگز در ریپو نیست — از GitHub Secrets بازسازی می‌شود
+      # (KEYSTORE_B64 = محتوای base64 فایل keystore، KEYSTORE_PASSWORD، KEY_ALIAS، KEY_PASSWORD)
+      - name: بازسازی keystore رسمی از GitHub Secrets
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KEY_PASS" ]; then
+            echo "::error::Secrets تنظیم نشده‌اند — KEYSTORE_B64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD را در Settings > Secrets و variables > Actions اضافه کنید"
+            exit 1
+          fi
+          mkdir -p android/keystore
+          echo "$KS_B64" | base64 -d > android/keystore/vizito-release.jks
+          printf 'storeFile=keystore/vizito-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KS_PASS" "$KS_ALIAS" "$KEY_PASS" > android/keystore/keystore.properties
+          echo "keystore رسمی بازسازی شد (از Secrets)"
+
+      - name: ساخت APK (نسخه Release)
+        run: gradle -p android assembleRelease --no-daemon --stacktrace
+
+      - name: تغییر نام APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/Vizito-v1.0.0.apk
+          ls -lh dist
+
+      - name: آپلود APK در آرتیفکت‌های اکشن
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Vizito-APK
+          path: dist/Vizito-v1.0.0.apk
+          if-no-files-found: error
+
+  publish-apk:
+    name: انتشار APK در Releases
+    needs: build-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: دریافت سورس‌کد (فقط برای بررسی آدرس سرور)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: بررسی اینکه آدرس سرور واقعی تنظیم شده باشد
+        id: url_check
+        run: |
+          URL=$(python3 -c "import re;s=open('android/app/src/main/res/values/strings.xml',encoding='utf-8').read();m=re.search(r'<string name=\"server_url\"[^>]*>(.*?)</string>',s,re.S);print(m.group(1).strip() if m else '')")
+          echo "server_url داخل APK: $URL"
+          if echo "$URL" | grep -q 'example.com'; then
+            echo "::warning::آدرس سرور هنوز «نمونه» است — انتشار در Releases صرف‌نظر شد. برای انتشار، ورک‌فلو را دستی اجرا کنید و آدرس واقعی HTTPS را وارد کنید."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "SERVER_URL_IN_APK=$URL" >> "$GITHUB_ENV"
+          fi
+
+      - name: دانلود APK از آرتیفکت‌های اکشن
+        if: steps.url_check.outputs.publish == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Vizito-APK
+          path: dist
+
+      - name: حذف ریلیز قبلی (جابه‌جایی تگ apk-latest)
+        if: steps.url_check.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete apk-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+
+      - name: انتشار APK در بخش Releases
+        if: steps.url_check.outputs.publish == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        env:
+          SERVER_URL_IN_APK: ${{ env.SERVER_URL_IN_APK }}
+        with:
+          tag_name: apk-latest
+          name: 'دانلود APK ویزیتو'
+          body: |
+            📱 **نسخه نصبی اندروید اپلیکیشن ویزیتو (Vizito)**
+
+            - فایل `Vizito-v1.0.0.apk` را دانلود و نصب کنید.
+            - برای نصب، اجازه «نصب از منابع ناشناس» را به مرورگر خود بدهید.
+            - اپلیکیشن به سرور وب ویزیتو متصل می‌شود؛ آدرس سرور داخل اپ تنظیم شده است.
+
+            🌐 **آدرس سرور این نسخه:** ${{ env.SERVER_URL_IN_APK }}
+
+            نسخه: 1.0.0
+          files: dist/Vizito-v1.0.0.apk
+          make_latest: 'true'
+          prerelease: false

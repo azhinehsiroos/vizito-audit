@@ -1,0 +1,73 @@
+plugins {
+    id 'com.android.application'
+}
+
+// امضای رسمی release — keystore هرگز در ریپو نیست؛ در CI از GitHub Secrets بازسازی می‌شود
+// (پوشه android/keystore/: vizito-release.jks + keystore.properties)
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("keystore/keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def hasReleaseKeystore = keystorePropertiesFile.exists() && keystoreProperties['storeFile']
+
+android {
+    namespace 'ir.vizito.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ir.vizito.app"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // امنیت: کد کوتاه و obfuscate می‌شود (پل WebView با قوانین proguard-rules.pro حفظ می‌شود)
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // امضای release؛ اگر keystore موجود نبود (مثلاً build محلی) با کلید debug ساخته می‌شود
+            signingConfig hasReleaseKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+    implementation 'androidx.core:core-splashscreen:1.0.1'
+
+    // رفع تداخل کلاس‌های تکراری kotlin-stdlib (jdk7/jdk8 از نسخه 1.8 داخل stdlib اصلی ادغام شده‌اند)
+    constraints {
+        implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22') {
+            because 'kotlin-stdlib-jdk7 is now a part of kotlin-stdlib'
+        }
+        implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22') {
+            because 'kotlin-stdlib-jdk8 is now a part of kotlin-stdlib'
+        }
+    }
+}
