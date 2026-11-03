@@ -6,6 +6,8 @@ export type Customer = {
   address: string | null;
   nationalId: string | null;
   type: string;
+  archived?: boolean;
+  archivedAt?: string | null;
   createdAt: string;
   _count?: { orders: number };
   orders?: Order[];

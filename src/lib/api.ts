@@ -1,46 +1,31 @@
 "use client";
 
 /**
- * لایه ارتباط با API — احراز هویت با کوکی HttpOnly (بدون ذخیره توکن در جاوااسکریپت)
- * امنیت: در حالت عادی توکن در localStorage نیست ⇒ XSS نمی‌تواند آن را بخواند.
- *
- * توکن پشتیبان (Fallback):
- *   در برخی بسترها (مثل نمایش برنامه داخل iframe بین‌سایتی در پنل‌های میزبان) مرورگر
- *   کوکی نشست را ذخیره نمی‌کند. در این حالت پس از ورود موفق، توکن به‌عنوان «پشتیبان»
- *   در localStorage ذخیره و با هدر Authorization: Bearer ارسال می‌شود.
- *   اگر کوکی کار کند (حالت عادی)، این توکن هرگز ذخیره نمی‌شود و با خروج پاک می‌شود.
+ * لایه ارتباط با API — احراز هویت «فقط» با کوکی HttpOnly
+ * -----------------------------------------------------------------------------
+ * امنیت:
+ *  - توکن نشست هرگز در localStorage/sessionStorage/cookie غیر HttpOnly ذخیره نمی‌شود
+ *    ⇒ جاوااسکریپت (و XSS) به توکن دسترسی ندارد.
+ *  - مرورگر کوکی HttpOnly را خودکار در همه درخواست‌های same-origin می‌فرستد؛
+ *    اینجا هیچ هدر Authorization دستی ساخته نمی‌شود.
+ *  - نسخه Android هم یک WebView تک‌دامینه با کوکی first-party است
+ *    (MainActivity: CookieManager.setAcceptCookie(true)) ⇒ همان کوکی HttpOnly
+ *    در WebView ذخیره و ارسال می‌شود و JS به آن دسترسی ندارد — راهکار امن و
+ *    بدون نیاز به Bearer Token.
+ *  - اگر مرورگر در بستر خاصی کوکی را ذخیره نکند (مثلاً iframe بسیار محدود)،
+ *    کاربر دوباره صفحه ورود می‌بیند — دیگر «توکن پشتیبان در localStorage» وجود
+ *    ندارد (طبق ممیزی امنیتی v1.0.9 حذف شد).
  */
 export type ApiError = { error: string; status: number };
-
-const FALLBACK_TOKEN_KEY = "vizito_fb_token";
-
-function getFallbackToken(): string | null {
-  try {
-    return localStorage.getItem(FALLBACK_TOKEN_KEY);
-  } catch {
-    return null; // حافظه در دسترس نیست (مثلاً sandbox سخت‌گیرانه)
-  }
-}
-
-/** ذخیره/پاک‌کردن توکن پشتیبان — فقط وقتی کوکی در بستر جاری کار نمی‌کند استفاده می‌شود */
-export function saveFallbackToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(FALLBACK_TOKEN_KEY, token);
-    else localStorage.removeItem(FALLBACK_TOKEN_KEY);
-  } catch {
-    /* حافظه در دسترس نیست */
-  }
-}
 
 export async function api<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
+  // الزام امنیتی (ضد CSRF): هر درخواست تغییردهنده باید Content-Type: application/json داشته باشد
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  const fbToken = getFallbackToken();
-  if (fbToken) headers["Authorization"] = `Bearer ${fbToken}`;
 
   const res = await fetch(path, {
     method: options.method || "GET",
@@ -54,8 +39,6 @@ export async function api<T = unknown>(
     data = null;
   }
   if (!res.ok) {
-    // توکن پشتیبان منقضی/نامعتبر است — پاک شود (کوکی HttpOnly ممکن است همچنان معتبر باشد)
-    if (res.status === 401 && fbToken) saveFallbackToken(null);
     // نشست منقضی/ابطال‌شده → بازگشت خودکار به صفحه ورود
     // (مسیرهای ورود/ثبت‌نام/من مستثنا هستند تا در بوت اولیه حلقه رفرش ساخته نشود)
     if (

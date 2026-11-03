@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { newToken, verifyPasswordSafe, tooMany, sessionCookie, jsonContentTypeGate } from "@/lib/auth";
+import { newToken, verifyPasswordSafe, tooMany, sessionCookie, csrfGate } from "@/lib/auth";
 import {
   dbRateLimit,
   dbRateLimitCount,
@@ -14,7 +14,7 @@ const WRONG_CREDENTIALS = { error: "شماره موبایل یا رمز عبور
 
 export async function POST(req: NextRequest) {
   // ── ضد CSRF (مسیر عمومی) — بلاک login CSRF از طریق فرم/text/plain بین‌سایتی ──
-  const csrf = jsonContentTypeGate(req);
+  const csrf = csrfGate(req);
   if (csrf) return csrf;
 
   try {
@@ -55,11 +55,10 @@ export async function POST(req: NextRequest) {
     }
 
     const token = await newToken(user.id, user.role, req.headers.get("user-agent"));
-    // امنیت: توکن در کوکی HttpOnly ست می‌شود (به جاوااسکریپت/XSS دسترسی ندارد)
-    // فیلد token در پاسخ فقط برای سازگاری نسخه‌های قدیمی اپ نصب‌شده است
+    // امنیت: توکن «فقط» در کوکی HttpOnly تحویل می‌شود — هیچ توکنی در بدنه پاسخ
+    // برنمی‌گردد تا جاوااسکریپت (و XSS) به آن دسترسی نداشته باشد (ممیزی v1.0.9)
     return Response.json(
       {
-        token,
         user: { id: user.id, mobile: user.mobile, name: user.name, role: user.role },
       },
       { headers: { "Set-Cookie": sessionCookie(req, token) } }

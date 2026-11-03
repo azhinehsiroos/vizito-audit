@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
-import { api, saveFallbackToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { Shell } from "@/components/vizito/Shell";
 import { AuthScreen } from "@/components/vizito/AuthScreen";
 import { Dashboard } from "@/components/vizito/Dashboard";
@@ -186,8 +186,13 @@ export function VizitoApp() {
 }
 
 function logoutAndReload() {
-  // ابطال سمت سرور (کوکی خودکار فرستاده می‌شود) و پاک‌سازی کامل + توکن پشتیبان
-  saveFallbackToken(null);
+  // ابطال سمت سرور نشست — کوکی HttpOnly خودکار فرستاده و پاک می‌شود (توکن پشتیبان دیگر وجود ندارد)
+  // امنیت: الزام Content-Type: application/json مطابق گیت ضد CSRF سرور
   const clear = () => location.reload();
-  fetch("/api/auth/logout", { method: "POST" }).catch(() => {}).finally(clear);
+  fetch("/api/auth/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  })
+    .catch(() => {})
+    .finally(clear);
 }

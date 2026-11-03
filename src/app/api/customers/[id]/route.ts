@@ -71,9 +71,44 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   const inScope = await findInScope(id, auth.ctx);
   if (!inScope) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
   try {
+    // ممیزی v1.0.9 — جلوگیری از حذف ناخواسته سوابق:
+    // مشتریِ دارای سفارش یا پرداخت «هرگز» سخت‌حذف نمی‌شود (حذف آبشاری سفارش‌ها/پرداخت‌ها
+    // سوابق مالی را نابود می‌کرد) — به‌جای آن آرشیو نرم می‌شود و قابل بازگردانی است.
+    // فقط مشتریِ بدون هیچ سابقه‌ای به‌صورت دائمی حذف می‌شود.
+    const [orderCount, paymentCount] = await Promise.all([
+      db.order.count({ where: { customerId: id } }),
+      db.payment.count({ where: { customerId: id } }),
+    ]);
+    if (orderCount > 0 || paymentCount > 0) {
+      const customer = await db.customer.update({
+        where: { id },
+        data: { archived: true, archivedAt: new Date() },
+      });
+      return Response.json({ ok: true, archived: true, customer });
+    }
     await db.customer.delete({ where: { id } });
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, archived: false });
   } catch {
     return Response.json({ error: "خطا در حذف مشتری" }, { status: 500 });
+  }
+}
+
+/** بازگردانی مشتری آرشیوشده (PATCH — فقط تغییر وضعیت آرشیو، بدون دست‌زدن به داده‌ها) */
+export async function PATCH(req: NextRequest, { params }: Params) {
+  const auth = await requireAuth(req, "customers");
+  if ("error" in auth) return auth.error;
+  const { id } = await params;
+  const inScope = await findInScope(id, auth.ctx);
+  if (!inScope) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
+  try {
+    const body = (await req.json().catch(() => ({}))) as { archived?: unknown };
+    const archived = body.archived === true;
+    const customer = await db.customer.update({
+      where: { id },
+      data: archived ? { archived: true, archivedAt: new Date() } : { archived: false, archivedAt: null },
+    });
+    return Response.json({ ok: true, customer });
+  } catch {
+    return Response.json({ error: "خطا در تغییر وضعیت آرشیو مشتری" }, { status: 500 });
   }
 }

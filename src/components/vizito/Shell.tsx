@@ -10,7 +10,7 @@ import { NotificationBell } from "@/components/vizito/NotificationBell";
 import { useApp, type ViewKey } from "@/lib/store";
 import { formatJalaliLong, expiryLabel, toFa } from "@/lib/jalali";
 import { SECTIONS } from "@/lib/sections";
-import { api, saveFallbackToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import {
   LayoutDashboard,
   Users,
@@ -61,9 +61,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
-    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت + توکن پشتیبان
+    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت — بدون توکن در JS
     api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    saveFallbackToken(null);
     setMe(null);
     setMenuOpen(false);
     setView("dashboard");

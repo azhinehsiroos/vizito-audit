@@ -8,7 +8,7 @@ import {
   passwordError,
   sessionCookie,
   FIRST_ADMIN_CLAIM_KEY,
-  jsonContentTypeGate,
+  csrfGate,
 } from "@/lib/auth";
 import {
   dbRateLimit,
@@ -55,7 +55,7 @@ const DUPLICATE_RESPONSE = () =>
 
 export async function POST(req: NextRequest) {
   // ── ضد CSRF (مسیر عمومی) — فقط application/json؛ اپ خود برنامه همین را می‌فرستد ──
-  const csrf = jsonContentTypeGate(req);
+  const csrf = csrfGate(req);
   if (csrf) return csrf;
 
   try {
@@ -226,10 +226,9 @@ export async function POST(req: NextRequest) {
     }
 
     const token = await newToken(user.id, user.role, req.headers.get("user-agent"));
-    // امنیت: توکن در کوکی HttpOnly ست می‌شود — فیلد token فقط برای سازگاری اپ قدیمی
+    // امنیت: توکن «فقط» در کوکی HttpOnly تحویل می‌شود — هیچ توکنی در بدنه پاسخ نیست (ممیزی v1.0.9)
     return Response.json(
       {
-        token,
         upgraded,
         user: { id: user.id, mobile: user.mobile, name: user.name, role: user.role },
       },

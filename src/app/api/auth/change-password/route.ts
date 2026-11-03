@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getAuth, unauthorized, forbidden, hashPassword, verifyPassword, passwordError, getTokenFromRequest } from "@/lib/auth";
+import { getAuth, unauthorized, forbidden, hashPassword, verifyPassword, passwordError, getTokenFromRequest, csrfGate } from "@/lib/auth";
 
 /**
  * تغییر رمز عبور خود کاربر — هر کاربر واردشده
@@ -8,6 +8,9 @@ import { getAuth, unauthorized, forbidden, hashPassword, verifyPassword, passwor
  * برای امنیت، همه نشست‌های دیگر کاربر باطل می‌شود (نشست فعلی حفظ می‌شود)
  */
 export async function POST(req: NextRequest) {
+  // ── ضد CSRF (ممیزی v1.0.9): این مسیر تغییردهنده بود و از گیت جا مانده بود ──
+  const csrf = csrfGate(req);
+  if (csrf) return csrf;
   const ctx = await getAuth(req);
   if (!ctx) return unauthorized();
   try {

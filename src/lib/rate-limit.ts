@@ -17,19 +17,23 @@ function sweep() {
 }
 
 /**
- * استخراج IP واقعی کلاینت.
+ * استخراج IP واقعی کلاینت — فقط با احتساب پروکسی‌های مورد اعتماد (ممیزی v1.0.9).
  * روی پلتفرم‌ها هدر x-forwarded-for «append» می‌شود؛ مقدار اول را مهاجم می‌تواند جعل کند
- * بنابراین ملاک، مقداری است که «آخرین پروکسی معتبر» اضافه کرده.
- * اگر جلوی برنامه بیش از یک پروکسی معتبر باشد (مثلاً Cloudflare + پلتفرم)،
- * تعداد آن‌ها را با env: TRUSTED_PROXY_HOPS تنظیم کنید (پیش‌فرض ۱).
+ * بنابراین ملاک، مقداری است که «آخرین پروکسی معتبر» اضافه کرده:
+ * با TRUSTED_PROXY_HOPS=n (پیش‌فرض ۱) از انتهای زنجیره n مقدار سمتِ پروکسی معتبر
+ * بیرون کشیده می‌شود؛ اگر زنجیره کوتاه‌تر از تعداد hopهای معتبر باشد (هدر جعلی پرشده)،
+ * به x-real-ip و در نهایت مقدار سراسری «local» برمی‌گردد — هرگز مقدار قابل‌جعلِ
+ * ابتدای زنجیره انتخاب نمی‌شود.
  */
 export function getClientIp(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for") || "";
+  // سقف زنجیره: هدر غول‌آسا (DoS پارس) بی‌اثر می‌شود — فقط ۸ hop آخر معنا دارد
   const hops = fwd
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean);
-  const n = Math.max(1, Number(process.env.TRUSTED_PROXY_HOPS || 1));
+    .filter(Boolean)
+    .slice(-8);
+  const n = Math.min(8, Math.max(1, Number(process.env.TRUSTED_PROXY_HOPS || 1)));
   const idx = hops.length - n;
   const picked = idx >= 0 ? hops[idx] : null;
   return picked || req.headers.get("x-real-ip") || "local";
@@ -75,50 +79,67 @@ export function retryAfterSeconds(key: string): number {
  * ------------------------------------------------------------------------- */
 
 /**
- * بررسی/ثبت یک تلاش در سطل ماندگار.
- * @returns true اگر مجاز است، false اگر سقف پر شده باشد
+ * بررسی/ثبت یک تلاش در سطل ماندگار — ممیزی v1.0.9:
+ *  ۱) «همه» تغییرات با updateMany شرطی (یک دستور UPDATE اتمیک SQLite) انجام می‌شود —
+ *     هیچ مسیر findUnique→create وجود ندارد ⇒ نه خطای یکتایی در لاگ می‌آید و نه
+ *     درخواستِ هم‌زمانِ رقیب بدون شمارش عبور می‌کند (رقابتِ «ایجاد اولیه سطل» حل شد:
+ *     بازنشانی پنجره مرده هم updateMany شرطی است؛ بازنده رقابت دوباره تلاش می‌کند)
+ *  ۲) fail-closed: در خطای دیتابیس «false» برمی‌گردد (درخواست رد می‌شود) —
+ *     دیگر خطای دیتابیس به‌صورت پیش‌فرض اجازه عبور نمی‌دهد
+ *
+ * @returns true اگر مجاز است، false اگر سقف پر شده یا خطای دیتابیس رخ داده باشد
  */
 export async function dbRateLimit(key: string, limit: number, windowMs: number): Promise<boolean> {
   const now = new Date();
   try {
-    // ۱) افزایش اتمیک روی پنجره زنده
-    const inc = await db.rateLimitBucket.updateMany({
-      where: { key, expiresAt: { gt: now } },
-      data: { count: { increment: 1 } },
-    });
-    if (inc.count === 1) {
-      const b = await db.rateLimitBucket.findUnique({
-        where: { key },
-        select: { count: true },
+    // حداکثر ۴ تلاش برای رسیدن به پنجره زنده (رقابت هم‌زمان روی پنجره مرده/سطل غایب)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // ۱) افزایش اتمیک روی پنجره زنده (یک UPDATE شرطی — هرگز خطای یکتایی نمی‌دهد)
+      const inc = await db.rateLimitBucket.updateMany({
+        where: { key, expiresAt: { gt: now } },
+        data: { count: { increment: 1 } },
       });
-      return !!b && b.count <= limit;
+      if (inc.count === 1) {
+        const b = await db.rateLimitBucket.findUnique({
+          where: { key },
+          select: { count: true },
+        });
+        return !!b && b.count <= limit;
+      }
+      // ۲) پنجره مرده → بازنشانی اتمیکِ شرطی (شامل شمارش همین درخواست: count=1)
+      const reset = await db.rateLimitBucket.updateMany({
+        where: { key, expiresAt: { lte: now } },
+        data: { count: 1, expiresAt: new Date(now.getTime() + windowMs) },
+      });
+      if (reset.count === 1) {
+        // بهداشت دیتابیس: پاک‌سازی سطل‌های خیلی قدیمی (بی‌صدا)
+        db.rateLimitBucket
+          .deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 3600_000) } } })
+          .catch(() => {});
+        return true;
+      }
+      // ۳) سطل اصلاً وجود ندارد → ساخت ردیف (شامل شمارش همین درخواست: count=1).
+      //    رقابت هم‌زمان با P2002 «بی‌صدا» هندل می‌شود: برنده count=1 می‌سازد؛
+      //    بازنده دور بعد با updateMany روی پنجره زنده شمرده می‌شود (بدون عبور رایگان)
+      try {
+        await db.rateLimitBucket.create({
+          data: { key, count: 1, expiresAt: new Date(now.getTime() + windowMs) },
+        });
+        return true;
+      } catch (e) {
+        if ((e as { code?: string })?.code !== "P2002") throw e;
+      }
     }
-    // ۲) پنجره مرده → بازنشانی اتمیکِ شرطی (updateMany هرگز خطای یکتایی نمی‌دهد)
-    const reset = await db.rateLimitBucket.updateMany({
-      where: { key, expiresAt: { lte: now } },
-      data: { count: 1, expiresAt: new Date(now.getTime() + windowMs) },
-    });
-    if (reset.count === 1) {
-      // بهداشت دیتابیس: پاک‌سازی سطل‌های خیلی قدیمی (بی‌صدا)
-      db.rateLimitBucket
-        .deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 24 * 3600_000) } } })
-        .catch(() => {});
-      return true;
-    }
-    // ۳) سطل اصلاً وجود ندارد → ساخت (پیش از create بررسی می‌شود تا رقابتِ رایج
-    // منجر به خطای یکتایی در لاگ نشود؛ فقط رقابت هم‌زمانِ بسیار نادر به catch می‌رسد)
-    const existing = await db.rateLimitBucket
-      .findUnique({ where: { key }, select: { expiresAt: true } })
-      .catch(() => null);
-    if (!existing || existing.expiresAt.getTime() <= now.getTime()) {
-      await db.rateLimitBucket
-        .create({ data: { key, count: 1, expiresAt: new Date(now.getTime() + windowMs) } })
-        .catch(() => {}); // رقابت نادر: سطل همین لحظه توسط دیگری ساخته شده — بی‌صدا
-    }
-    return true;
-  } catch {
-    // در خطای دیتابیس مسیر را نبندیم (fail-open برای در دسترس ماندن سرویس)
-    return true;
+    // رقابت شدیدِ غیرعادی: این درخواست رد می‌شود (جهت خطا امن است)
+    return false;
+  } catch (e) {
+    // ممیزی v1.0.9 — fail-closed: خطای دیتابیس دیگر «اجازه عبور» نیست
+    // (هیچ مقدار حساسی لاگ نمی‌شود — فقط نوع خطا)
+    console.warn(
+      "vizito rate-limit: db error → fail-closed (request rejected):",
+      (e as Error)?.name || "unknown"
+    );
+    return false;
   }
 }
 

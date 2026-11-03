@@ -43,6 +43,8 @@ import {
   ChevronLeft,
   Building2,
   Users,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 
 const emptyForm = {
@@ -58,14 +60,20 @@ export function CustomersView() {
   const { setView, me } = useApp();
   const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [query, setQuery] = useState("");
+  // ممیزی v1.0.9 — نمایش فعال/آرشیو: حذف مشتریِ دارای سابقه = آرشیو (نه حذف)
+  const [showArchived, setShowArchived] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async (q = "") => {
+  const load = useCallback(async (q = "", archived = false) => {
     try {
-      const data = await api<Customer[]>(`/api/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (archived) params.set("archived", "1");
+      const qs = params.toString();
+      const data = await api<Customer[]>(`/api/customers${qs ? `?${qs}` : ""}`);
       setCustomers(data);
     } catch (e) {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
@@ -74,8 +82,8 @@ export function CustomersView() {
   }, []);
 
   useEffect(() => {
-    load(query);
-  }, [query, load]);
+    load(query, showArchived);
+  }, [query, showArchived, load]);
 
   const openCreate = () => {
     setEditing(null);
@@ -111,7 +119,7 @@ export function CustomersView() {
         toast({ title: "ثبت شد ✅", description: "پروفایل مشتری ساخته شد" });
       }
       setDialogOpen(false);
-      load(query);
+      load(query, showArchived);
     } catch (e) {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
     } finally {
@@ -120,11 +128,33 @@ export function CustomersView() {
   };
 
   const remove = async (c: Customer) => {
-    if (!confirm(`مشتری «${c.name}» و همه سفارش‌هایش حذف شود؟`)) return;
+    // ممیزی v1.0.9 — مشتریِ دارای سفارش/پرداخت هرگز سخت‌حذف نمی‌شود؛ سرور او را آرشیو می‌کند
+    if (showArchived) {
+      if (!confirm(`حذف دائمی «${c.name}»؟ فقط اگر هیچ سفارش و پرداختی نداشته باشد حذف می‌شود؛ در غیر این صورت در آرشیو می‌ماند.`)) return;
+    } else {
+      if (!confirm(`مشتری «${c.name}» حذف شود؟\nاگر سفارش یا پرداخت داشته باشد، حذف دائمی نمی‌شود و فقط آرشیو می‌شود (سوابق مالی حفظ می‌ماند).`)) return;
+    }
     try {
-      await api(`/api/customers/${c.id}`, { method: "DELETE" });
-      toast({ title: "حذف شد" });
-      load(query);
+      const r = await api<{ ok: boolean; archived?: boolean }>(`/api/customers/${c.id}`, { method: "DELETE" });
+      if (r?.archived) {
+        toast({
+          title: "به آرشیو منتقل شد 📦",
+          description: "این مشتری سابقه سفارش/پرداخت دارد — سوابق مالی حفظ شد و می‌توانید او را بازگردانید",
+        });
+      } else {
+        toast({ title: "حذف شد" });
+      }
+      load(query, showArchived);
+    } catch (e) {
+      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+    }
+  };
+
+  const unarchive = async (c: Customer) => {
+    try {
+      await api(`/api/customers/${c.id}`, { method: "PATCH", body: { archived: false } });
+      toast({ title: "بازگردانی شد ✅", description: "مشتری به فهرست فعالان برگشت" });
+      load(query, showArchived);
     } catch (e) {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
     }
@@ -167,6 +197,28 @@ export function CustomersView() {
         />
       </div>
 
+      {/* فیلتر فعال/آرشیو — ممیزی v1.0.9 */}
+      <div className="flex items-center gap-1.5" role="tablist" aria-label="وضعیت مشتریان">
+        <Button
+          size="sm"
+          variant={showArchived ? "outline" : "secondary"}
+          onClick={() => setShowArchived(false)}
+          aria-selected={!showArchived}
+          role="tab"
+        >
+          <Users className="h-3.5 w-3.5" /> فعال
+        </Button>
+        <Button
+          size="sm"
+          variant={showArchived ? "secondary" : "outline"}
+          onClick={() => setShowArchived(true)}
+          aria-selected={showArchived}
+          role="tab"
+        >
+          <Archive className="h-3.5 w-3.5" /> آرشیو
+        </Button>
+      </div>
+
       {!customers ? (
         <div className="space-y-2">
           {[1, 2, 3].map((i) => (
@@ -176,11 +228,23 @@ export function CustomersView() {
       ) : customers.length === 0 ? (
         <Card>
           <CardContent className="p-8 text-center space-y-2">
-            <Users className="h-10 w-10 text-muted-foreground/40 mx-auto" />
-            <p className="text-sm text-muted-foreground">هنوز مشتری ثبت نشده است</p>
-            <Button size="sm" variant="secondary" onClick={openCreate}>
-              <Plus className="h-4 w-4" /> ثبت اولین مشتری
-            </Button>
+            {showArchived ? (
+              <>
+                <Archive className="h-10 w-10 text-muted-foreground/40 mx-auto" />
+                <p className="text-sm text-muted-foreground">آرشیو خالی است</p>
+                <p className="text-[11px] text-muted-foreground/70">
+                  مشتری‌های حذف‌شده‌ای که سابقه سفارش/پرداخت دارند اینجا نگه‌داری می‌شوند
+                </p>
+              </>
+            ) : (
+              <>
+                <Users className="h-10 w-10 text-muted-foreground/40 mx-auto" />
+                <p className="text-sm text-muted-foreground">هنوز مشتری ثبت نشده است</p>
+                <Button size="sm" variant="secondary" onClick={openCreate}>
+                  <Plus className="h-4 w-4" /> ثبت اولین مشتری
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -196,6 +260,11 @@ export function CustomersView() {
                         {typeIcon(c.type)}
                         {typeLabel(c.type)}
                       </Badge>
+                      {c.archived && (
+                        <Badge variant="outline" className="text-[9px] gap-1 text-muted-foreground">
+                          <Archive className="h-3 w-3" /> آرشیو
+                        </Badge>
+                      )}
                     </div>
                     {c.company && (
                       <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1">
@@ -220,10 +289,22 @@ export function CustomersView() {
                   </button>
                   <div className="flex flex-col items-end gap-1.5 shrink-0">
                     <div className="flex items-center gap-0.5">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(c)} aria-label="ویرایش">
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => remove(c)} aria-label="حذف">
+                      {showArchived ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-primary"
+                          onClick={() => unarchive(c)}
+                          aria-label="بازگردانی از آرشیو"
+                        >
+                          <ArchiveRestore className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(c)} aria-label="ویرایش">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => remove(c)} aria-label={showArchived ? "حذف دائمی" : "حذف"}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -236,7 +317,10 @@ export function CustomersView() {
                     </button>
                   </div>
                 </div>
-                <div className="text-[9px] text-muted-foreground mt-1">عضویت: {formatJalali(c.createdAt)}</div>
+                <div className="text-[9px] text-muted-foreground mt-1">
+                  عضویت: {formatJalali(c.createdAt)}
+                  {c.archived && c.archivedAt ? ` • آرشیو: ${formatJalali(c.archivedAt)}` : ""}
+                </div>
               </CardContent>
             </Card>
           ))}

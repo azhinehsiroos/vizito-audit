@@ -263,27 +263,133 @@ export function tooMany(retryAfterSeconds: number, message?: string) {
 /**
  * گیت ضد CSRF برای «همه» مسیرهای تغییردهنده — شامل مسیرهای عمومیِ بدون نشست
  * (ورود/ثبت‌نام/خروج/فعال‌سازی لایسنس) که از requireAuth عبور نمی‌کنند.
- * تحلیل امنیتی:
- *  ۱) fetch بین‌سایتی با Content-Type: application/json ⇒ preflight ⇒ این API
- *     هیچ هدر CORS صادر نمی‌کند ⇒ مرورگر خودش بلاک می‌کند
- *  ۲) تنها برد عملی مهاجم: ارسال فرم HTML/text/plain بدون preflight
- *     (تلاش برای login CSRF / ثبت‌نام بین‌سایتی) — همین لایه آن را ۴۰۳ می‌کند
- *  ۳) اپ خود برنامه همیشه application/json می‌فرستد (src/lib/api.ts) ⇒ سازگاری کامل
- *  ⚠️ بررسی مبدأ (Origin) عمداً وجود ندارد: پشت پروکسی‌های بازنویسی‌کننده Host
- *     مقایسهٔ مبدأ، درخواست مشروع را رد می‌کرد (نسخه ۱.۰.۵ — حذف‌شده نهایی)
+ *
+ * لایه ۱ — Content-Type سخت‌گیرانه:
+ *  هر درخواست POST/PUT/PATCH/DELETE «باید» Content-Type: application/json داشته باشد.
+ *  Content-Type خالی، text/plain، form-urlencoded و multipart همه رد می‌شوند.
+ *  تحلیل امنیتی:
+ *   ۱) fetch بین‌سایتی با application/json ⇒ preflight ⇒ این API هیچ هدر CORS
+ *      صادر نمی‌کند ⇒ مرورگر خودش بلاک می‌کند
+ *   ۲) تنها برد عملی مهاجم: فرم HTML/text/plain/form-urlencoded بدون preflight
+ *      (login CSRF / ثبت‌نام بین‌سایتی) — همین لایه همه را ۴۰۳ می‌کند
+ *   ۳) اپ خود برنامه همیشه application/json می‌فرستد (src/lib/api.ts) ⇒ سازگاری کامل
+ *
+ * لایه ۲ — بررسی مبدأ (Origin / Referer):
+ *  - اگر درخواست Origin یا Referer داشته باشد، hostname آن باید با hostname
+ *    «مبدأ مؤثر خود درخواست» (x-forwarded-host یا host) یا یکی از مبدأهای مجاز
+ *    env: VIZITO_ALLOWED_ORIGINS (مثلاً دامنه www و بدون-www) یکی باشد؛
+ *    وگرنه ۴۰۳. (مقایسه بر اساس hostname است تا اختلاف پروتکلِ ناشی از پروکسی
+ *    بین‌لایه‌ای درخواست مشروع را رد نکند؛ مهاجم بین‌سایتی hostname متفاوت دارد.)
+ *  - اگر سرور پشت پروکسی‌ای است که هیچ هدری از مبدأ واقعی مرورگر را منتقل
+ *    نمی‌کند، دامنه برنامه را در VIZITO_ALLOWED_ORIGINS تنظیم کنید.
+ *  - ورودی‌های VIZITO_ALLOWED_ORIGINS می‌توانند wildcard پسوندی باشند:
+ *    «*.example.com» یا «.example.com» ⇒ هر زیردامنه example.com مجاز است
+ *    (نقطهٔ ابتدایی جلوی جعل پسوند مثل evil-example.com را می‌گیرد).
+ *  - مبدأ «داخلی» (localhost/127.x/10.x/192.168.x/172.16-31.x/بدون نقطه) بررسی
+ *    نمی‌شود تا توسعه محلی، شبکه داخلی و ابزارهای تست نشکند.
+ *  - نبودن هر دو هدر (کلاینت غیرمرورگری مثل curl و WebView خاص) مجاز است —
+ *    مرورگرها در درخواست تغییردهنده بین‌سایتی همیشه Origin می‌فرستند.
+ *  - Origin برابر رشته «null» (iframe سندباکس‌شده/file://) رد می‌شود.
  */
-export function jsonContentTypeGate(req: NextRequest): Response | null {
+export function csrfGate(req: NextRequest): Response | null {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return null;
-  const ct = (req.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-  if (ct && ct !== "application/json") {
+
+  const block = (reason: string, presented: string | null) => {
     console.warn("vizito csrf-block:", req.method, new URL(req.url).pathname, {
-      ct,
-      origin: req.headers.get("origin"),
+      reason,
+      presented,
       host: req.headers.get("host"),
+      forwardedHost: req.headers.get("x-forwarded-host"),
     });
     return forbidden("درخواست بین‌دامنه‌ای مجاز نیست");
+  };
+
+  // ── لایه ۱: Content-Type ──
+  const ct = (req.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (ct !== "application/json") {
+    return block("content-type", ct || "(empty)");
+  }
+
+  // ── لایه ۲: Origin / Referer ──
+  const origin = req.headers.get("origin");
+  const referer = req.headers.get("referer");
+  if (!origin && !referer) return null; // کلاینت غیرمرورگری — CSRF مرورگری نیست
+
+  const presentedRaw = origin || referer || "";
+  const presented = originOf(presentedRaw);
+  if (!presented) return block("unparsable-origin", presentedRaw.slice(0, 60));
+
+  const effective = effectiveOriginOf(req);
+  // مبدأ داخلی (توسعه/شبکه محلی/ابزار تست) — بررسی نمی‌شود
+  if (isInternalHostname(hostnameOf(effective))) return null;
+
+  const allowedHostnames = new Set<string>();
+  const allowedSuffixes: string[] = []; // wildcard پسوندی: «.example.com» ⇒ هر زیردامنه
+  if (effective) allowedHostnames.add(hostnameOf(effective));
+  for (const o of (process.env.VIZITO_ALLOWED_ORIGINS || "").split(",")) {
+    const trimmed = o.trim().replace(/\/+$/, "");
+    if (!trimmed) continue;
+    if (trimmed.startsWith("*.") || trimmed.startsWith(".")) {
+      const suffix = trimmed.replace(/^\*/, "");
+      if (suffix.length > 2 && suffix.includes(".")) {
+        allowedSuffixes.push(suffix.toLowerCase());
+        continue;
+      }
+    }
+    const h = hostnameOf(trimmed);
+    if (h) allowedHostnames.add(h);
+  }
+  const presentedHost = presented.hostname;
+  const suffixOk = allowedSuffixes.some((s) => presentedHost.endsWith(s));
+  if (!allowedHostnames.has(presentedHost) && !suffixOk) {
+    return block("cross-origin", presented.origin);
   }
   return null;
+}
+
+/** استخراج مبدأ (scheme://host) از یک URL/Origin/Referer — نامعتبر ⇒ null */
+function originOf(value: string): { hostname: string; origin: string } | null {
+  try {
+    const u = new URL(value);
+    return { hostname: u.hostname.toLowerCase(), origin: `${u.protocol}//${u.host}`.toLowerCase() };
+  } catch {
+    return null;
+  }
+}
+
+/** مبدأ مؤثر خودِ درخواست با احترام به زنجیره پروکسی (XFH و XFP) */
+function effectiveOriginOf(req: NextRequest): string {
+  const fwdHost = (req.headers.get("x-forwarded-host") || "").split(",")[0].trim();
+  const host = fwdHost || (req.headers.get("host") || "").trim();
+  const fwdProto = (req.headers.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const proto = fwdProto || (req.url.startsWith("https") ? "https" : "http");
+  return host ? `${proto.toLowerCase()}://${host.toLowerCase()}` : "";
+}
+
+function hostnameOf(origin: string): string {
+  if (!origin) return "";
+  if (!origin.includes("://")) return origin.toLowerCase();
+  try {
+    return new URL(origin).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/** آیا hostname داخلی/محلی است؟ (توسعه محلی، شبکه داخلی، ابزارهای تست) */
+function isInternalHostname(hostname: string): boolean {
+  const h = (hostname || "").toLowerCase();
+  if (!h) return true; // بدون host — محیط غیر HTTP
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || h === "[::1]") return true;
+  if (!h.includes(".")) return true; // hostname داخلی بدون نقطه
+  if (h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".lan")) return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
+  const m = /^172\.(\d{1,2})\./.exec(h);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= 16 && n <= 31) return true;
+  }
+  return false;
 }
 
 /** احراز هویت + بررسی دسترسی به یک بخش (مدیر همیشه مجاز) + قفل لایسنس (402) */
@@ -291,9 +397,9 @@ export async function requireAuth(
   req: NextRequest,
   section?: string
 ): Promise<{ ctx: AuthContext } | { error: Response }> {
-  // ── ضد CSRF — الزام Content-Type: application/json برای درخواست‌های تغییردهنده ──
-  // تحلیل امنیتی کامل در jsonContentTypeGate — اینجا همان لایه استفاده می‌شود.
-  const csrf = jsonContentTypeGate(req);
+  // ── ضد CSRF — Content-Type سخت‌گیرانه + بررسی مبدأ (Origin/Referer) ──
+  // تحلیل امنیتی کامل در csrfGate — اینجا همان لایه برای همه مسیرهای احراز هویت‌شده استفاده می‌شود
+  const csrf = csrfGate(req);
   if (csrf) return { error: csrf };
   const ctx = await getAuth(req);
   if (!ctx) return { error: unauthorized() };

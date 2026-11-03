@@ -47,6 +47,7 @@ import {
   Loader2,
   ClipboardList,
   FileText,
+  Archive,
 } from "lucide-react";
 
 type Selected = { productId: string; quantity: number; offer: string };
@@ -215,9 +216,16 @@ export function CustomerProfile() {
             <span className="font-bold text-sm flex items-center gap-1.5">
               <User className="h-4 w-4 text-primary" /> {customer.name}
             </span>
-            <Badge variant="secondary" className="text-[9px]">
-              {CUSTOMER_TYPES.find((t) => t.key === customer.type)?.label || customer.type}
-            </Badge>
+            <span className="flex items-center gap-1">
+              {customer.archived && (
+                <Badge variant="outline" className="text-[9px] gap-1 text-muted-foreground">
+                  <Archive className="h-3 w-3" /> آرشیو شده — سوابق حفظ شده است
+                </Badge>
+              )}
+              <Badge variant="secondary" className="text-[9px]">
+                {CUSTOMER_TYPES.find((t) => t.key === customer.type)?.label || customer.type}
+              </Badge>
+            </span>
           </div>
           {customer.company && (
             <div className="text-muted-foreground flex items-center gap-1">

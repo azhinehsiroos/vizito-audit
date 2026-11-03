@@ -123,6 +123,7 @@ npm ci        # دقیقاً همان نسخه‌های package-lock.json — ه
 | `OWNER_MOBILES` | اختیاری | موبایل‌های سازنده با کاما (دسترسی همیشگی) |
 | `OWNER_SETUP_KEY` | فقط با OWNER_MOBILES | کلید تصادفی قوی |
 | `TRUSTED_PROXY_HOPS` | اختیاری | `1` (پیش‌فرض Passenger روی cPanel) |
+| `VIZITO_ALLOWED_ORIGINS` | اختیاری | مبدأهای مجاز اضافی برای ضد CSRF — فقط اگر برنامه در iframe پنل دیگری باز می‌شود؛ wildcard پسوندی: `*.example.com` |
 | `LICENSE_PUBLIC_KEY_PEM` | معمولاً خالی | فقط برای چرخش کلید عمومی |
 | `LICENSE_PRIVATE_KEY_PEM` | ❌ روی سرور مشتری نگذارید | فقط سرور سازنده |
 

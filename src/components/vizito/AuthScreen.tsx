@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, saveFallbackToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { Loader2, Sparkles, Lock, User, Building2, KeyRound, Rocket, Eye, EyeOff } from "lucide-react";
 import { useApp } from "@/lib/store";
@@ -45,33 +45,19 @@ export function AuthScreen() {
     }
     setLoading(true);
     try {
-      const res = await api<{ token?: string }>("/api/auth/login", {
+      await api("/api/auth/login", {
         method: "POST",
         body: login,
       });
-      // تلاش اول با کوکی — اگر جواب داد یعنی کوکی در این بستر کار می‌کند
+      // امنیت: نشست فقط با کوکی HttpOnly برقرار می‌شود (توکن به JS داده نمی‌شود و
+      // در localStorage ذخیره نمی‌شود) — اگر کوکی در این بستر ذخیره نشود، کاربر
+      // دوباره صفحه ورود می‌بیند (به‌جای نگه‌داری توکن در حافظه جاوااسکریپت)
       if (await loadMe()) {
-        // کوکی کار می‌کند — فقط پشتیبان قدیمیِ احتمالی پاک شود
-        saveFallbackToken(null);
         toast({ title: "خوش آمدید 👋", description: "با موفقیت وارد شدید" });
-      } else if (res.token) {
-        // کوکی ذخیره نشد (مثلاً iframe بین‌سایتی یا مرورگر با حفاظت کامل کوکی)
-        // مهم: توکن پشتیبان باید «بماند» — همه درخواست‌های بعدی با Bearer ارسال می‌شود
-        saveFallbackToken(res.token);
-        if (await loadMe()) {
-          toast({ title: "خوش آمدید 👋", description: "با موفقیت وارد شدید" });
-        } else {
-          saveFallbackToken(null);
-          toast({
-            title: "ورود انجام شد اما نشست برقرار نشد",
-            description: "مرورگر اجازه ذخیره نشست در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
-            variant: "destructive",
-          });
-        }
       } else {
         toast({
           title: "ورود انجام شد اما نشست برقرار نشد",
-          description: "مرورگر اجازه ذخیره نشست در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
+          description: "مرورگر اجازه ذخیره کوکی در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
           variant: "destructive",
         });
       }
@@ -97,13 +83,12 @@ export function AuthScreen() {
     }
     setLoading(true);
     try {
-      const res = await api<{ token?: string; user: { role: string } }>("/api/auth/register", {
+      const res = await api<{ user: { role: string } }>("/api/auth/register", {
         method: "POST",
         body: reg,
       });
-      // تلاش اول با کوکی — اگر جواب داد یعنی کوکی در این بستر کار می‌کند
+      // امنیت: نشست فقط با کوکی HttpOnly برقرار می‌شود (بدون توکن در JS/localStorage)
       if (await loadMe()) {
-        saveFallbackToken(null);
         toast({
           title: "ثبت‌نام موفق 🎉",
           description:
@@ -111,29 +96,10 @@ export function AuthScreen() {
               ? "شما به عنوان مدیر برنامه ثبت شدید"
               : "حساب شما ساخته شد؛ در انتظار تعیین دسترسی توسط مدیر",
         });
-      } else if (res.token) {
-        // کوکی ذخیره نشد — توکن پشتیبان بماند (درخواست‌های بعدی با Bearer)
-        saveFallbackToken(res.token);
-        if (await loadMe()) {
-          toast({
-            title: "ثبت‌نام موفق 🎉",
-            description:
-              res.user.role === "ADMIN"
-                ? "شما به عنوان مدیر برنامه ثبت شدید"
-                : "حساب شما ساخته شد؛ در انتظار تعیین دسترسی توسط مدیر",
-          });
-        } else {
-          saveFallbackToken(null);
-          toast({
-            title: "ثبت‌نام انجام شد اما نشست برقرار نشد",
-            description: "مرورگر اجازه ذخیره نشست در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
-            variant: "destructive",
-          });
-        }
       } else {
         toast({
           title: "ثبت‌نام انجام شد اما نشست برقرار نشد",
-          description: "مرورگر اجازه ذخیره نشست در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
+          description: "مرورگر اجازه ذخیره کوکی در این بستر نمی‌دهد — برنامه را در تب جدید باز کنید",
           variant: "destructive",
         });
       }

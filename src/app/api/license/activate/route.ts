@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { activateLicense, getLicenseState, parseLicenseKey, getInstallId } from "@/lib/license";
 import { rateLimit, retryAfterSeconds, getClientIp } from "@/lib/rate-limit";
-import { jsonContentTypeGate } from "@/lib/auth";
+import { csrfGate } from "@/lib/auth";
 
 /**
  * فعال‌سازی / شارژ مجدد لایسنس با کلید — عمومی (وقتی برنامه قفل است کاربر راهی برای ورود ندارد)
@@ -12,7 +12,7 @@ import { jsonContentTypeGate } from "@/lib/auth";
  *  - کلیدِ صادرشده برای نصب دیگر (installId) پذیرفته نمی‌شود
  */
 export async function POST(req: NextRequest) {
-  const csrf = jsonContentTypeGate(req);
+  const csrf = csrfGate(req);
   if (csrf) return csrf;
   const ip = getClientIp(req);
   const limitKey = `lic-act:${ip}`;

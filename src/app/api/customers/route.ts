@@ -6,10 +6,14 @@ import { strField, strOrNull, inWhitelist, VALID_CUSTOMER_TYPES } from "@/lib/va
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "customers");
   if ("error" in auth) return auth.error;
-  const q = req.nextUrl.searchParams.get("q")?.trim().slice(0, 60) || "";
+  const sp = req.nextUrl.searchParams;
+  const q = sp.get("q")?.trim().slice(0, 60) || "";
+  // ممیزی v1.0.9 — فیلتر آرشیو: پیش‌فرض فقط مشتری‌های فعال؛ ?archived=1 فقط آرشیوشده‌ها
+  // (سوابق مشتری آرشیوشده در سفارش‌ها/پرداخت‌ها/گزارش‌ها دست‌نخورده می‌ماند)
+  const showArchived = sp.get("archived") === "1";
   // محدودسازی دسترسی: مدیر و دارای مجوز all_customers ← همه مشتری‌ها؛ بقیه فقط مشتری‌های خودشان
   const allAccess = canSeeAllCustomers(auth.ctx);
-  const scopeWhere = allAccess ? {} : { createdBy: auth.ctx.user.id };
+  const scopeWhere = { ...(allAccess ? {} : { createdBy: auth.ctx.user.id }), archived: showArchived };
   const customers = await db.customer.findMany({
     where: {
       ...scopeWhere,

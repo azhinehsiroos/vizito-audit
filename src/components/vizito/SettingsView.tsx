@@ -19,7 +19,7 @@ import {
 import { JalaliCalendar } from "@/components/vizito/JalaliCalendar";
 import { Logo } from "@/components/vizito/Logo";
 import { useApp } from "@/lib/store";
-import { api, saveFallbackToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { fileToCompressedDataUrl } from "@/lib/image";
 import { expiryLabel, toFa, formatJalali } from "@/lib/jalali";
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -159,9 +159,8 @@ export function SettingsView() {
   };
 
   const logout = () => {
-    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت + توکن پشتیبان
+    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت — بدون توکن در JS
     api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    saveFallbackToken(null);
     setMe(null);
     setView("dashboard");
   };

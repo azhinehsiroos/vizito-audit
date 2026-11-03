@@ -62,21 +62,21 @@ function copy(from, to, { must = true } = {}) {
   fs.cpSync(src, path.join(STAGE, to), { recursive: true, force: true });
 }
 
-console.log("[vizito-deploy] ۱/۵ کپی Standalone (شامل static + public و موتورها) ...");
+console.log("[vizito-deploy] ۱/۶ کپی Standalone (شامل static + public و موتورها) ...");
 fs.cpSync(STANDALONE_DIR, path.join(STAGE, ".next", "standalone"), { recursive: true, force: true });
 
-console.log("[vizito-deploy] ۲/۵ فایل‌های راه‌اندازی و مهاجرت ...");
+console.log("[vizito-deploy] ۲/۶ فایل‌های راه‌اندازی و مهاجرت ...");
 copy("server.cjs", "server.cjs");
 copy("scripts/migrate-sqlite.cjs", "scripts/migrate-sqlite.cjs");
 copy("prisma/schema.prisma", "prisma/schema.prisma");
 copy("prisma/migrations", "prisma/migrations");
 
-console.log("[vizito-deploy] ۳/۵ مستندات و مرجع نسخه ...");
+console.log("[vizito-deploy] ۳/۶ مستندات و مرجع نسخه ...");
 copy("package.json", "package.json");
 copy(".env.example", ".env.example");
 copy("docs/DEPLOY-CPANEL-FA.md", "docs/DEPLOY-CPANEL-FA.md", { must: false });
 
-console.log("[vizito-deploy] ۴/۵ بهداشت امنیتی — حذف .env و فایل‌های حساس از بسته ...");
+console.log("[vizito-deploy] ۴/۶ بهداشت امنیتی — حذف .env و فایل‌های حساس از بسته ...");
 // هرگز: env، کلیدها، دیتابیس، لاگ، پوشه توسعه
 const forbidden = [".env", ".env.local", ".env.production", ".env.production.local"];
 for (const f of forbidden) {
@@ -98,7 +98,83 @@ for (const d of muslDirs) {
 }
 console.log("[vizito-deploy] ✔ واریانت‌های musl sharp حذف شد (هاست cPanel گلیبک است)");
 
-console.log("[vizito-deploy] ۵/۵ فشرده‌سازی ZIP ...");
+console.log("[vizito-deploy] ۵/۶ صحت‌سنجی نهایی بسته (فایل‌های ضروری + باینری‌های لینوکسی) ...");
+// ── فایل‌های ضروری بسته — نبودِ هرکدام ⇒ توقف با خطای واضح (ممیزی v1.0.9) ──
+const requiredPaths = [
+  [".next/standalone/server.js", "file", "سرور Standalone"],
+  [".next/standalone/.next/static", "dir", "فایل‌های استاتیک build"],
+  ["server.cjs", "file", "Startup File پنل cPanel"],
+  ["scripts/migrate-sqlite.cjs", "file", "مهاجرت بدون Prisma CLI"],
+  ["prisma/schema.prisma", "file", "اسکیمای Prisma"],
+  ["prisma/migrations", "dir", "مهاجرت‌های دیتابیس"],
+  ["package.json", "file", "مرجع نسخه"],
+  [".env.example", "file", "نمونه متغیرهای محیطی"],
+];
+for (const [rel, kind, label] of requiredPaths) {
+  const p = path.join(STAGE, ...rel.split("/"));
+  if (!fs.existsSync(p)) die("فایل ضروری بسته پیدا نشد: " + rel + " (" + label + ")");
+  if (kind === "dir" && !fs.statSync(p).isDirectory()) die("مسیر ضروری پوشه نیست: " + rel);
+}
+const migDirs = fs
+  .readdirSync(path.join(STAGE, "prisma", "migrations"), { withFileTypes: true })
+  .filter((d) => d.isDirectory() && /^\d{14}_/.test(d.name));
+if (migDirs.length === 0) die("هیچ پوشه مهاجرتی (NNNNNNNNNNNNNN_*) در prisma/migrations نیست");
+
+// ── باینری‌های پلتفرم هدف (Linux x64 / glibc) در خود بسته ──
+const stageNm = path.join(STAGE, ".next", "standalone", "node_modules");
+const stagePrisma = path.join(stageNm, ".prisma", "client");
+const stageEngines = fs.existsSync(stagePrisma)
+  ? fs.readdirSync(stagePrisma).filter((f) => /^libquery_engine-.*\.so(\.node)?$/.test(f))
+  : [];
+if (stageEngines.length === 0) {
+  die("موتور کوئری لینوکسی Prisma در بسته نیست — بسته روی هاست بالا نمی‌آید (Build را روی لینوکس بگیرید)");
+}
+for (const d of ["@img/sharp-linux-x64", "@img/sharp-libvips-linux-x64"]) {
+  const p = path.join(stageNm, ...d.split("/"));
+  const files = fs.existsSync(p) ? fs.readdirSync(p).filter((f) => !f.startsWith(".")) : [];
+  if (files.length === 0) die("باینری لینوکسی sharp («" + d + "») در بسته نیست");
+}
+console.log("[vizito-deploy] ✔ موتورهای Prisma: " + stageEngines.join(", "));
+console.log("[vizito-deploy] ✔ باینری‌های sharp لینوکسی x64 موجود است");
+console.log("[vizito-deploy] ✔ " + migDirs.length + " مهاجرت دیتابیس همراه بسته است: " + migDirs.map((d) => d.name).join(", "));
+
+console.log("[vizito-deploy] ۶/۶ اسکن محرمانگی بسته قبل از ZIP ...");
+// ── اسکن کل بسته: هیچ .env/کلید/دیتابیس/پشتیبانی نباید داخل ZIP باشد ──
+const SECRET_PATH_PATTERNS = [
+  // .env و هر واریانتش (مثل .env.local/.env.production) ممنوع — فقط .env.example مجاز است
+  { re: /(^|\/)\.env(?!\.example)(\.[^/]+)?$/i, why: "فایل env" },
+  { re: /\.(pem|jks|keystore|p12|pfx)$/i, why: "کلید/گواهی" },
+  { re: /\.(db|sqlite|sqlite3|db-wal|db-shm)$/i, why: "دیتابیس" },
+  { re: /(^|\/)(id_rsa|id_dsa|id_ed25519)(\.|$)/i, why: "کلید SSH" },
+  { re: /(^|\/)secrets?\.[a-z0-9]+$/i, why: "فایل secret" },
+];
+// پوشه‌های حساس فقط در «ریشه بسته» ممنوع‌اند (مسیرهای داخلی Next مثل
+// .next/server/app/api/backups بخشی از خود build هستند و مجازند)
+for (const d of ["keys", "keystore", "backups", "db", "download"]) {
+  if (fs.existsSync(path.join(STAGE, d))) {
+    die("پوشه حساس در ریشه بسته پیدا شد: " + d + " — ZIP ساخته نشد");
+  }
+}
+let scanned = 0;
+(function walk(dir) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    const rel = path.relative(STAGE, full).split(path.sep).join("/");
+    if (ent.isDirectory()) {
+      walk(full);
+      continue;
+    }
+    scanned++;
+    for (const { re, why } of SECRET_PATH_PATTERNS) {
+      if (re.test(rel)) {
+        die("محتوای ممنوعه در بسته پیدا شد [" + why + "]: " + rel + " — ZIP ساخته نشد");
+      }
+    }
+  }
+})(STAGE);
+console.log("[vizito-deploy] ✔ اسکن " + scanned + " فایل — بدون .env/کلید/دیتابیس/پشتیبان");
+
+console.log("[vizito-deploy] فشرده‌سازی ZIP ...");
 fs.rmSync(OUT_ZIP, { force: true });
 execSync(`cd "${OUT_DIR}" && zip -qr "${path.basename(OUT_ZIP)}" "${path.basename(STAGE)}"`, {
   stdio: "inherit",

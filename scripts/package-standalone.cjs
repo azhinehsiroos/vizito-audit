@@ -78,7 +78,47 @@ if (removedEnv > 0) {
   console.log("[vizito] ✔ " + removedEnv + " فایل .env تکراری از خروجی Standalone حذف شد (بهداشت امنیتی)");
 }
 
-// ۴) صحت‌سنجی نهایی
+// ۴) صحت‌سنجی باینری‌های پلتفرم هدف (Linux x64 / glibc) — ممیزی v1.0.9
+//    بسته‌ی نهایی باید بدون Build روی هاست لینوکسی اجرا شود؛ اگر باینری‌های
+//    لینوکسی Prisma/Sharp در خروجی نباشند، برنامه روی هاست بالا نمی‌آید ⇒
+//    Build همین‌جا با خطای واضح متوقف می‌شود (نه در Production!)
+const nm = path.join(STANDALONE_DIR, "node_modules");
+
+// ۴-۱) موتور کوئری Prisma لینوکسی
+const prismaClientDir = path.join(nm, ".prisma", "client");
+if (!fs.existsSync(prismaClientDir)) {
+  die(
+    "node_modules/.prisma/client در Standalone نیست — کلاینت Prisma ردیابی نشده.\n" +
+      "  outputFileTracingIncludes در next.config.ts را بررسی کنید."
+  );
+}
+const engines = fs
+  .readdirSync(prismaClientDir)
+  .filter((f) => /^libquery_engine-.*\.so(\.node)?$/.test(f));
+if (engines.length === 0) {
+  die(
+    "هیچ موتور کوئری لینوکسی Prisma (libquery_engine-*.so) در Standalone نیست.\n" +
+      "  اگر روی ویندوز/مک Build گرفته‌اید، بلاک generator در prisma/schema.prisma باید\n" +
+      "  binaryTargets لینوکسی داشته باشد (rhel-openssl-1.1.x / debian-openssl-1.1.x /\n" +
+      "  rhel-openssl-3.0.x) یا Build را روی لینوکس بگیرید."
+  );
+}
+console.log("[vizito] ✔ موتورهای Prisma لینوکسی: " + engines.join(", "));
+
+// ۴-۲) باینری‌های sharp لینوکسی (x64)
+for (const d of ["@img/sharp-linux-x64", "@img/sharp-libvips-linux-x64"]) {
+  const p = path.join(nm, ...d.split("/"));
+  const files = fs.existsSync(p) ? fs.readdirSync(p).filter((f) => !f.startsWith(".")) : [];
+  if (files.length === 0) {
+    die(
+      "باینری لینوکسی sharp («" + d + "») در Standalone نیست — بهینه‌سازی تصویر روی هاست شکست می‌خورد.\n" +
+        "  Build را روی لینوکس (یا WSL) بگیرید یا outputFileTracingIncludes در next.config.ts را بررسی کنید."
+    );
+  }
+  console.log("[vizito] ✔ " + d + " موجود است (" + files.length + " فایل)");
+}
+
+// ۵) صحت‌سنجی نهایی
 if (!fs.existsSync(staticDest)) die("پس از بسته‌بندی، مسیر static در Standalone نیست");
 if (fs.existsSync(path.join(STANDALONE_DIR, ".env"))) die("حذف .env از Standalone ناموفق بود");
 console.log("[vizito] ✔ خروجی Standalone کامل شد: .next/standalone");

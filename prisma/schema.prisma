@@ -62,11 +62,17 @@ model Customer {
   address    String?
   nationalId String?
   type       String    @default("STORE") // STORE | PHARMACY | SALON
+  // آرشیو نرم (ممیزی v1.0.9): مشتری دارای سفارش/پرداخت هرگز سخت‌حذف نمی‌شود —
+  // سوابق مالی باید بمانند؛ حذف مشتریِ دارای سابقه = آرشیو (قابل بازگردانی)
+  archived   Boolean   @default(false)
+  archivedAt DateTime?
   createdBy  String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   orders     Order[]
   payments   Payment[]
+
+  @@index([archived])
 }
 
 model ProductGroup {

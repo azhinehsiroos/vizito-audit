@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getAuth, unauthorized } from "@/lib/auth";
+import { getAuth, unauthorized, csrfGate } from "@/lib/auth";
 import { isOwnerMobile } from "@/lib/license";
 import { strField } from "@/lib/validate";
 
@@ -13,6 +13,9 @@ export async function GET(req: NextRequest) {
 
 /** ویرایش پروفایل خود کاربر (نام / نام شرکت) — هر کاربر فقط پروفایل خودش */
 export async function PUT(req: NextRequest) {
+  // ── ضد CSRF (ممیزی v1.0.9): این مسیر تغییردهنده بود و از گیت جا مانده بود ──
+  const csrf = csrfGate(req);
+  if (csrf) return csrf;
   const ctx = await getAuth(req);
   if (!ctx) return unauthorized();
   try {
