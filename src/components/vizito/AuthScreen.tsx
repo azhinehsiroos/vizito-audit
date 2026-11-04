@@ -224,12 +224,12 @@ export function AuthScreen() {
                     <p className="text-[11px] text-muted-foreground leading-5">
                       در حال حاضر هیچ حسابی در برنامه وجود ندارد. اولین ثبت‌نام فقط با «کد راه‌اندازی اولیه»
                       (SETUP_TOKEN روی سرور) ممکن است و آن کاربر مدیر کل برنامه خواهد شد؛
-                      پس از آن ثبت‌نام‌های بعدی فقط با کد دعوت مدیر امکان‌پذیر است.
+                      پس از آن ثبت‌نام برای همه آزاد است (کد دعوت فقط اختیاری است).
                     </p>
                   </div>
                 )}
                 <CardDescription className="text-center">
-                  اولین ثبت‌نام، مدیر کل برنامه خواهد بود
+                  ثبت‌نام آزاد است — پس از ثبت‌نام، ۲۴ ساعت استفاده رایگان دارید
                 </CardDescription>
                 {(needsSetup || showSetupToken) && (
                   <div className="space-y-1.5">
@@ -281,7 +281,7 @@ export function AuthScreen() {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="reg-invite">کد دعوت (برای ثبت‌نام‌های بعد از مدیر)</Label>
+                  <Label htmlFor="reg-invite">کد دعوت (اختیاری)</Label>
                   <div className="relative">
                     <KeyRound className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground" />
                     <Input
@@ -293,7 +293,9 @@ export function AuthScreen() {
                       onChange={(e) => setReg({ ...reg, inviteCode: e.target.value })}
                     />
                   </div>
-                  <p className="text-[10px] text-muted-foreground">اگر اولین کاربر هستید (مدیر)، این فیلد را خالی بگذارید</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    اختیاری است — اگر از مدیر کد دعوت دارید وارد کنید؛ خالی بودن این فیلد مانع ثبت‌نام نیست
+                  </p>
                 </div>
                 {showOwnerKey && (
                   <div className="space-y-1.5">

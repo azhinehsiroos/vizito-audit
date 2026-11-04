@@ -15,7 +15,7 @@ import {
   dbRetryAfterSeconds,
   getClientIp,
 } from "@/lib/rate-limit";
-import { isLicenseValid, licenseLockedResponse, isOwnerMobile, startTrial } from "@/lib/license";
+import { isLicenseValid, isOwnerMobile, startTrial } from "@/lib/license";
 import { normalizeMobile, MOBILE_RE, strField } from "@/lib/validate";
 
 const INVITE_KEY = "invite_code";
@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
      * راه‌حل: کل مسیر «شمارش + تعیین نقش + ساخت کاربر» داخل یک تراکنش است و نقش مدیر
      * فقط به کسی می‌رسد که بتواند ردیف «رزرو اولین مدیر» (key یکتا در Setting) را بسازد.
      * ساخت ردیف یکتا در سطح دیتابیس اتمیک است ⇒ فقط یک درخواست برنده می‌شود؛
-     * بقیه به مسیر عادی (لایسنس + کد دعوت) هدایت می‌شوند.
+     * بقیه به مسیر عادی (ثبت‌نام آزاد) هدایت می‌شوند.
      *
      * سیاست سازنده: ثبت‌نام معتبر سازنده (شماره ∈ OWNER_MOBILES + کلید درست)
      * «همیشه» به حساب ADMIN منجر می‌شود — حتی اگر قبلاً کاربری با همان شماره
@@ -181,20 +181,15 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // قفل لایسنس — سازنده همیشه مستثنا؛ مدیر اول (با SETUP_TOKEN معتبر) بدون لایسنس هم
-      // می‌تواند مدیر شود و تریال ۲۴ ساعته می‌گیرد؛ بقیه فقط با لایسنس معتبر.
-      if (!isFirst && !ownerSetupOk && !(await isLicenseValid())) {
-        throw new RegisterAbort(licenseLockedResponse());
-      }
-
-      // ثبت‌نام‌های بعدی فقط با کد دعوت مدیر — استثنا: سازنده با کلید راه‌اندازی معتبر
-      if (!isFirst && !ownerSetupOk) {
+      // ثبت‌نام آزاد (ممیزی v1.1.4) — ثبت‌نام به خرید لایسنس یا فعال‌بودن لایسنس دیگران وابسته نیست؛
+      // کد دعوت «اختیاری» است: اگر وارد شود باید معتبر باشد (مقایسه امن زمانی — ممیزی v1.1.2)؛
+      // خالی بودن آن مانع ثبت‌نام نیست. دسترسی خود کاربر با ترِیال شخصی ۲۴ساعته کنترل می‌شود.
+      if (!isFirst && !ownerSetupOk && inviteCode) {
         const invite = await tx.setting.findUnique({ where: { key: INVITE_KEY } });
-        // ممیزی v1.1.2 — مقایسه امن زمانی (هم‌تراز با SETUP_TOKEN/OWNER_SETUP_KEY)
-        if (!invite || !inviteCode || !safeEq(inviteCode, invite.value)) {
+        if (!invite || !safeEq(inviteCode, invite.value)) {
           throw new RegisterAbort(
             Response.json(
-              { error: "ثبت‌نام فقط با کد دعوت مدیر امکان‌پذیر است" },
+              { error: "کد دعوت واردشده نادرست است" },
               { status: 403 }
             )
           );
@@ -209,7 +204,8 @@ export async function POST(req: NextRequest) {
           password: passwordHash,
           // نقش: اولین کاربر = مدیر؛ سازنده با کلید معتبر = «همیشه» مدیر؛ بقیه = کاربر عمومی
           role: isFirst || ownerSetupOk ? "ADMIN" : "USER",
-          // نوع حساب: کاربران عادیِ ثبت‌نامی = PUBLIC با ترِیال شخصی ۲۴ ساعته (یک‌بار)
+          // نوع حساب: کاربران عادیِ ثبت‌نامی = PUBLIC با ترِیال شخصی دقیقاً ۲۴ ساعته (یک‌بار،
+          // مستقل از وضعیت لایسنس نصب — ممیزی v1.1.4)
           // ضد دور زدن: trialUntil فقط همین‌جا و فقط برای حساب تازه نوشته می‌شود؛
           // موبایل یکتاست و ثبت‌نام تکراری مطلقاً رد می‌شود + محدودیت نرخ ثبت‌نام فعال است
           ...(isFirst || ownerSetupOk

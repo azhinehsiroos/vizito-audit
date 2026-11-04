@@ -367,7 +367,9 @@ export async function licenseLockedResponseDetailed(): Promise<Response> {
       error:
         d.phase === "TRIAL_OVER"
           ? "دوره آزمایشی به پایان رسیده است — برای ادامه استفاده لایسنس تهیه کنید (اطلاعات شما محفوظ است)"
-          : "لایسنس برنامه منقضی شده است — در مهلت تمدید ۳۰ روزه کلید شارژ را وارد کنید (اطلاعات شما محفوظ است)",
+          : d.phase === "NOT_ACTIVATED"
+            ? "لایسنس هنوز فعال نشده است — کلید لایسنس را وارد کنید (اطلاعات شما محفوظ است)"
+            : "لایسنس برنامه منقضی شده است — در مهلت تمدید ۳۰ روزه کلید شارژ را وارد کنید (اطلاعات شما محفوظ است)",
       code: "LICENSE_LOCKED",
       lockPhase: d.phase,
       graceDaysLeft: d.graceDaysLeft,

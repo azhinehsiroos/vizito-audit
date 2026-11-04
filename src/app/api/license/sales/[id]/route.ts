@@ -127,6 +127,35 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const sale = await db.licenseSale.findUnique({ where: { id } });
     if (!sale) return Response.json({ error: "فروش لایسنس یافت نشد" }, { status: 404 });
+    // ممیزی v1.1.4 — ردپای حسابرسی حذف فروش: سوابق صدور/تمدید نباید بدون رد کنار بروند؛
+    // لاگ پیوست‌شونده در Setting (بدون migration) — سقف ۱۰۰ رکورد آخر
+    const logKey = "license_sales_deleted_log";
+    const prev = await db.setting.findUnique({ where: { key: logKey } });
+    let entries: unknown[] = [];
+    if (prev) {
+      try {
+        const parsed: unknown = JSON.parse(prev.value);
+        if (Array.isArray(parsed)) entries = parsed;
+      } catch {
+        entries = [];
+      }
+    }
+    entries.push({
+      id: sale.id,
+      buyer: `${sale.buyerName} — ${sale.buyerMobile}`,
+      duration: sale.durationLabel,
+      durationDays: sale.durationDays,
+      issuedAt: sale.createdAt.toISOString(),
+      expiresAt: sale.expiresAt ? sale.expiresAt.toISOString() : null,
+      deletedAt: new Date().toISOString(),
+      deletedBy: auth.ctx.user.mobile,
+    });
+    if (entries.length > 100) entries = entries.slice(-100);
+    await db.setting.upsert({
+      where: { key: logKey },
+      update: { value: JSON.stringify(entries) },
+      create: { key: logKey, value: JSON.stringify(entries) },
+    });
     await db.licenseSale.delete({ where: { id } });
     // اگر کلیدِ همین فروش روی این سرور فعال باشد، با حذف فروش لایسنس هم باطل می‌شود
     const row = await db.setting.findUnique({ where: { key: "license_v1" } });

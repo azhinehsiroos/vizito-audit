@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAuth } from "@/lib/auth";
-import { getLicenseState } from "@/lib/license";
+import { getLicenseState, licenseLockDetail } from "@/lib/license";
 import { db } from "@/lib/db";
 import { lifecycleState, runDataRetentionSweep } from "@/lib/lifecycle";
 
@@ -25,8 +25,11 @@ export async function GET(req: NextRequest) {
         .catch(() => {});
     }
     const auth = await getAuth(req);
+    // ممیزی v1.1.4 — فاز قفل (TRIAL_OVER/LICENSE_EXPIRED/NOT_ACTIVATED) برای نمایش پیام
+    // درست «پایان مهلت رایگان» در صفحه لایسنس (بدون داده حساس)
+    const phase = (await licenseLockDetail()).phase;
     if (auth) {
-      return Response.json({ ...state, freshInstall });
+      return Response.json({ ...state, phase, freshInstall });
     }
     // نسخه عمومی حداقلی — شامل وضعیت مهلت تمدید ۳۰ روزه و لایسنس دائمی (بدون داده حساس)
     return Response.json({
@@ -39,6 +42,7 @@ export async function GET(req: NextRequest) {
       expiredAt: state.expiredAt ?? null,
       graceUntil: state.graceUntil ?? null,
       graceDaysLeft: state.graceDaysLeft ?? null,
+      phase,
       installId: state.installId ?? null,
       name: null,
       mobile: null,

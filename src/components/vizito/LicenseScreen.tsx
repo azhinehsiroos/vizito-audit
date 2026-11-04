@@ -35,6 +35,8 @@ export type LicenseState = {
   graceUntil?: string | null;
   graceDaysLeft?: number | null;
   installId?: string | null;
+  /** فاز قفل (TRIAL_OVER / LICENSE_EXPIRED / NOT_ACTIVATED) — برای پیام درست «پایان مهلت رایگان» */
+  phase?: string | null;
   /** نصب تازه (هیچ حسابی نیست) — به‌جای این صفحه، صفحه ورود/ثبت‌نام مدیر اول نشان داده می‌شود */
   freshInstall?: boolean;
 };
@@ -96,6 +98,8 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
   const [pricing, setPricing] = useState<Pricing>(DEFAULT_PRICING);
   const trial = useTrialCountdown(state.trial ? state.expiresAt : null);
   const expired = state.activated && !state.valid;
+  // پایان مهلت استفاده رایگان (ترِیال) — پیام الزامی دستور کار (ممیزی v1.1.4)
+  const trialOver = state.phase === "TRIAL_OVER";
 
   // تعرفه‌های فروش — عمومی و بدون احراز هویت
   useEffect(() => {
@@ -115,7 +119,7 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
 
   const activate = async () => {
     if (!key.trim()) {
-      toast({ title: "کلید لایسنس را وارد کنید", variant: "destructive" });
+      toast({ title: "کد لایسنس را وارد کنید", variant: "destructive" });
       return;
     }
     setBusy(true);
@@ -163,8 +167,20 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
           </div>
 
           <div className="space-y-1">
-            <h1 className="font-black text-lg">{expired ? "لایسنس منقضی شده" : "فعال‌سازی لایسنس ویزیتو"}</h1>
-            {expired ? (
+            <h1 className="font-black text-lg">
+              {trialOver
+                ? "مهلت استفاده رایگان شما به پایان رسیده است"
+                : expired
+                  ? "لایسنس منقضی شده"
+                  : "فعال‌سازی لایسنس ویزیتو"}
+            </h1>
+            {trialOver ? (
+              <p className="text-xs text-muted-foreground leading-6">
+                برای ادامه استفاده از ویزیتو، لایسنس تهیه کنید و کد آن را در کادر زیر وارد کنید.
+                تمام اطلاعات شما (مشتریان، سفارش‌ها، پرداخت‌ها) محفوظ است و با فعال‌سازی لایسنس
+                دقیقاً از همان‌جا ادامه می‌دهید.
+              </p>
+            ) : expired ? (
               <p className="text-xs text-muted-foreground leading-6">
                 {state.name
                   ? `لایسنس ثبت‌شده برای «${state.name}» در تاریخ ${state.expiresAt ? formatJalali(state.expiresAt) : "—"} به پایان رسیده است.`
@@ -198,14 +214,14 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
             </div>
           )}
 
-          {/* دوره آزمایشی رایگان — شمارش معکوس زنده */}
-          {state.trial && trial && (
+          {/* دوره آزمایشی رایگان — پایان یافته (فاز TRIAL_OVER) یا در حال شمارش */}
+          {(trialOver || (state.trial && trial)) && (
             <div className="rounded-xl border border-amber-300/60 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 space-y-1.5 text-right">
               <div className="flex items-center justify-between gap-2">
                 <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-0">
                   <Hourglass className="h-3 w-3" /> دوره آزمایشی رایگان
                 </Badge>
-                {trial.over ? (
+                {trialOver || !trial || trial.over ? (
                   <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300">پایان یافته</span>
                 ) : (
                   <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300" dir="rtl">
@@ -286,7 +302,7 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
 
           <div className="space-y-2 text-right">
             <Label htmlFor="license-key" className="text-xs">
-              کلید لایسنس
+              کد لایسنس خود را وارد کنید
             </Label>
             <Input
               id="license-key"
@@ -302,7 +318,7 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
 
           <Button className="w-full" size="lg" onClick={activate} disabled={busy}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-            فعال‌سازی و ورود
+            فعال‌سازی لایسنس
           </Button>
 
           {!pricing.telegram.trim() && (

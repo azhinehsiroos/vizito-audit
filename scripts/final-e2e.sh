@@ -117,7 +117,8 @@ C=$(XFF_REG 3100 198.51.100.13 "{\"mobile\":\"$ADMIN_MOBILE\",\"name\":\"تکر�
 contains "ثبت‌نام تکراری همان شماره (حتی با SETUP_TOKEN درست) → 409" "ثبت‌نام انجام نشد" "$C"
 EXPL_MOBILE="0915$(shuf -i 1000000-9999999 -n 1)"
 R=$(XFF_REG 3100 198.51.100.14 "{\"mobile\":\"$EXPL_MOBILE\",\"name\":\"سوءاستفاده از توکن\",\"password\":\"$PASSWORD\",\"setupToken\":\"$SETUP_TOKEN\"}")
-contains "SETUP_TOKEN پس از اولین ثبت‌نام برای شماره جدید بی‌اثر است (کد دعوت لازم)" "کد دعوت" "$R"
+check "SETUP_TOKEN پس از اولین ثبت‌نام مدیر نمی‌سازد (USER)" "USER" "$(jget "$R" "d['user']['role']")"
+check "حساب سوءاستفاده‌کننده توکن با همان شماره ساخته شد (ثبت‌نام آزاد)" "$EXPL_MOBILE" "$(jget "$R" "d['user']['mobile']")"
 
 echo "== ۲) کاربر عمومی + ترِیال شخصی ۲۴ ساعته =="
 rq 3100 admin POST /api/settings/invite '{}' >/dev/null
@@ -131,6 +132,16 @@ check "ترِیال شخصی (trialUntil)" "True" "$(jget "$R" "d['trialUntil'] 
 check "بخش users در ترِیال باز نیست" "False" "$(jget "$R" "'users' in d['sections']")"
 C=$(code 3100 public POST /api/customers '{"name":"مشتری آزمایشی","phone":"09160000001","type":"STORE"}')
 check "کاربر عمومی در ترِیال مشتری می‌سازد" "201" "$C"
+
+echo "== ۲٫۵) ثبت‌نام آزاد — بدون کد دعوت و بدون توکن (ممیزی v1.1.4) =="
+FREE_MOBILE="0935$(shuf -i 1000000-9999999 -n 1)"
+R=$(XFF_REG 3100 198.51.100.21 "{\"mobile\":\"$FREE_MOBILE\",\"name\":\"کاربر آزاد\",\"password\":\"$PASSWORD\"}")
+check "ثبت‌نام آزاد بدون کد دعوت/توکن → USER" "USER" "$(jget "$R" "d['user']['role']")"
+WRONGI_MOBILE="0936$(shuf -i 1000000-9999999 -n 1)"
+C=$(XFF_REG 3100 198.51.100.22 "{\"mobile\":\"$WRONGI_MOBILE\",\"name\":\"کد دعوت غلط\",\"password\":\"$PASSWORD\",\"inviteCode\":\"wrong-invite-xyz\"}")
+contains "کد دعوت نادرست رد شد (403)" "کد دعوت واردشده نادرست است" "$C"
+R=$(XFF_REG 3100 198.51.100.23 "{\"mobile\":\"$WRONGI_MOBILE\",\"name\":\"کد دعوت درست\",\"password\":\"$PASSWORD\",\"inviteCode\":\"$INVITE\"}")
+check "ثبت‌نام با کد دعوت درست همچنان کار می‌کند → USER" "USER" "$(jget "$R" "d['user']['role']")"
 
 echo "== ۳) پرسنل با گرنت دائمی =="
 R=$(rq 3100 admin POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل فروش\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"orders\",\"dashboard\"],\"durationHours\":null}")
@@ -239,11 +250,50 @@ check "پرسنل از قفل پایان ترِیال معاف است (200)" "20
 C=$(code 3100 public GET /api/customers)
 check "کاربر عمومی بعد از ترِیال قفل است (402)" "402" "$C"
 
+echo "== ۵٫۵) ترِیال شخصی دقیقاً ۲۴ ساعت — مستقل از قفل نصب (ممیزی v1.1.4) =="
+# نصب اکنون در فاز TRIAL_OVER است اما ترِیال شخصی کاربر آزاد (ثبت‌نام در بخش ۲٫۵) هنوز فعال است
+rq 3100 free POST /api/auth/login "{\"mobile\":\"$FREE_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+R=$(rq 3100 free GET /api/auth/me)
+check "کاربر آزاد: kind=PUBLIC" "PUBLIC" "$(jget "$R" "d['user']['kind']")"
+check "کاربر آزاد داخل ترِیال شخصی: licenseLocked=false" "False" "$(jget "$R" "d['licenseLocked']")"
+T1=$(jget "$R" "d['trialUntil']")
+C=$(code 3100 free GET /api/customers)
+check "داخل ترِیال شخصی با نصبِ قفل‌شده کار می‌کند (200)" "200" "$C"
+C=$(code 3100 free POST /api/customers '{"name":"مشتری کاربر آزاد","phone":"09160000009","type":"STORE"}')
+check "کاربر آزاد داخل ترِیال شخصی مشتری می‌سازد (201)" "201" "$C"
+# خروج و ورود مجدد ترِیال را تمدید نمی‌کند (trialUntil فقط در ثبت‌نام نوشته می‌شود)
+rq 3100 free POST /api/auth/logout '{}' >/dev/null
+rq 3100 free POST /api/auth/login "{\"mobile\":\"$FREE_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+T2=$(jget "$(rq 3100 free GET /api/auth/me)" "d['trialUntil']")
+check "خروج و ورود مجدد ترِیال را تمدید نمی‌کند (trialUntil ثابت)" "$T1" "$T2"
+# پایان ترِیال شخصی فقط همان کاربر قفل می‌کند؛ پرسنل همچنان معاف (خط ۲۳۷ بالا)
+node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBA');
+d.prepare('UPDATE User SET trialUntil=? WHERE mobile=?').run(new Date(Date.now()-60000).toISOString(),'$FREE_MOBILE');
+" >/dev/null
+C=$(code 3100 free GET /api/customers)
+check "کاربر آزاد پس از پایان ترِیال شخصی قفل شد (402)" "402" "$C"
+R=$(rq 3100 free GET /api/auth/me)
+check "کاربر آزاد پس از پایان ترِیال: licenseLocked=true" "True" "$(jget "$R" "d['licenseLocked']")"
+check "اطلاعات کاربر آزاد پس از قفل حفظ شده (حساب موجود)" "True" "$(jget "$R" "d['user']['mobile'] == '$FREE_MOBILE'")"
+
 echo "== ۶) پایان مهلت ۳۰ روزه + حذف کنترل‌شده خودکار =="
 INSTALL_ID=$(jget "$(curl -s http://127.0.0.1:3100/api/license/status)" "d['installId']")
 K40=$(sign_key "خریدار آزمایشی" "$ADMIN_MOBILE" "$(($(date +%s%3N) - 40*86400000))" "$INSTALL_ID")
+# ممیزی v1.1.4 — کلید منقضی برای فعال‌سازی پذیرفته نمی‌شود (منقضی هرگز چرخه حذف را آغاز نمی‌کند)
+C=$(code 3100 none POST /api/license/activate "{\"key\":\"$K40\"}")
+check "کلید منقضی (۴۰ روز) پذیرفته نمی‌شود (400)" "400" "$C"
 R=$(rq 3100 none POST /api/license/activate "{\"key\":\"$K40\"}")
-check "فعال‌سازی کلید ۴۰ روز منقضی" "True" "$(jget "$R" "d.get('ok')")"
+contains "پیام «کد لایسنس منقضی شده است»" "منقضی شده است" "$R"
+C=$(code 3100 none POST /api/license/activate '{"key":"VZT2.ZmFrZS1wYXlsb2Fk.ZmFrZS1zaWc"}')
+check "کد لایسنس نامعتبر (امضای غلط) رد شد (400)" "400" "$C"
+# برای آزمایش چرخه حیات، لایسنس منقضی مستقیماً در DB ثبت می‌شود (کلید امضاشدهٔ معتبر — مکانیزم تست)
+node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBA');
+d.prepare('INSERT OR REPLACE INTO Setting (key,value,updatedAt) VALUES (?,?,?)').run('license_v1', JSON.stringify({key:process.argv[1],activatedAt:new Date().toISOString()}), new Date().toISOString());
+" "$K40" >/dev/null
 # تریگر تنبل: صفحات قفل status را صدا می‌زنند — اینجا هم همین کار و بعد بررسی DB
 for _ in $(seq 1 30); do curl -s http://127.0.0.1:3100/api/license/status >/dev/null; sleep 1; done
 node -e "
@@ -265,10 +315,15 @@ check "مدیر غیرِمالک حذف شد" "0" "$(jget "$SW" "d['adminLeft']"
 check "پرسنل حفظ شد" "1" "$(jget "$SW" "d['staffLeft']")"
 ls "$TMP/a-data/backups/" >/dev/null 2>&1 && [ -n "$(ls "$TMP/a-data/backups/" 2>/dev/null)" ] && ok "پشتیبان پیش از حذف روی دیسک است" || bad "پشتیبان روی دیسک نیست"
 
-echo "== ۷) مهلت تمدید (کلید ۱ روز منقضی — جدیدتر از ۴۰ روز) =="
+echo "== ۷) مهلت تمدید (لایسنس ۱ روز منقضی در DB — کلید منقضی از API پذیرفته نمی‌شود) =="
 K1=$(sign_key "خریدار آزمایشی" "$ADMIN_MOBILE" "$(($(date +%s%3N) - 1*86400000))" "$INSTALL_ID")
-R=$(rq 3100 none POST /api/license/activate "{\"key\":\"$K1\"}")
-check "فعال‌سازی کلید ۱ روز منقضی" "True" "$(jget "$R" "d.get('ok')")"
+C=$(code 3100 none POST /api/license/activate "{\"key\":\"$K1\"}")
+check "کلید منقضی ۱ روز هم پذیرفته نمی‌شود (400)" "400" "$C"
+node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBA');
+d.prepare('INSERT OR REPLACE INTO Setting (key,value,updatedAt) VALUES (?,?,?)').run('license_v1', JSON.stringify({key:process.argv[1],activatedAt:new Date().toISOString()}), new Date().toISOString());
+" "$K1" >/dev/null
 R=$(curl -s http://127.0.0.1:3100/api/license/status)
 check "قفل فعال (valid=false)" "False" "$(jget "$R" "d['valid']")"
 check "مهلت تمدید بین ۲۸ تا ۳۰ روز" "True" "$(jget "$R" "28 <= (d['graceDaysLeft'] or 0) <= 30")"

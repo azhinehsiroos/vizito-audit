@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { activateLicense, getLicenseState, parseLicenseKey, getInstallId } from "@/lib/license";
+import { activateLicense, getLicenseState, parseLicenseKey, getInstallId, getStoredLicense } from "@/lib/license";
 import { rateLimit, retryAfterSeconds, getClientIp } from "@/lib/rate-limit";
 import { csrfGate } from "@/lib/auth";
 
@@ -39,6 +39,18 @@ export async function POST(req: NextRequest) {
         return Response.json({ error: "این کلید برای این نصب صادر نشده است" }, { status: 400 });
       }
     }
+    // ممیزی v1.1.4 — کلید منقضی برای «فعال‌سازی جدید» پذیرفته نمی‌شود (لایسنس منقضی، منقضی می‌ماند؛
+    // ورود آن هرگز چرخه حذف ۳۰ روزه را آغاز نمی‌کند). کلیدِ ذخیره‌شدهٔ فعلی استثناست تا
+    // پیام‌های دقیق ضد تنزیل («کلید جدیدتر نیست») برای تلاش شارژ با همان کلید حفظ شود.
+    if (payload.e !== 0) {
+      const stored = await getStoredLicense();
+      if (stored?.key.trim() !== key && payload.e < Date.now()) {
+        return Response.json(
+          { error: "این کد لایسنس منقضی شده است — برای تمدید از سازنده کلید جدید بگیرید" },
+          { status: 400 }
+        );
+      }
+    }
     // ضد قفل‌کردن سیستم با کلید قدیمی: انقضای کلید جدید باید از انقضای مؤثر فعلی بیشتر باشد
     // لایسنس دائمی (e = 0) همیشه «جدیدتر» از هر کلید مدت‌دار است
     const cur = await getLicenseState();
@@ -67,7 +79,11 @@ export async function POST(req: NextRequest) {
     // امنیت (ممیزی v1.1.2) — فقط پیام‌های کنترل‌شدهٔ خود برنامه به کلاینت برمی‌گردند؛
     // خطاهای دیتابیس/داخلی (که جزئیات ساختار را افشا می‌کنند) هرگز خام پاس نمی‌شوند
     const msg = (e as Error)?.message || "";
-    const controlled = ["کلید لایسنس نامعتبر است", "این کلید برای این نصب صادر نشده است"];
+    const controlled = [
+      "کلید لایسنس نامعتبر است",
+      "این کلید برای این نصب صادر نشده است",
+      "این کد لایسنس منقضی شده است — برای تمدید از سازنده کلید جدید بگیرید",
+    ];
     return Response.json(
       {
         error: controlled.includes(msg)

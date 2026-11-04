@@ -437,10 +437,17 @@ export async function requireAuth(
   // قفل لایسنس (402) با تفکیک فاز:
   //  - حساب مالک هیچ‌وقت قفل نمی‌شود (isLicenseValid برای مالک true است)
   //  - پرسنل (STAFF) فقط از قفل «پایان ترِیال عمومی» معاف است — انقضای خود لایسنس همه را قفل می‌کند
+  //  - ممیزی v1.1.4: کاربر عمومی داخل «ترِیال شخصی دقیقاً ۲۴ ساعته» خودش از قفل نصب عبور می‌کند
+  //    (شروع ترِیال وابسته به زمان ثبت‌نام است، نه زمان ثبت‌نام دیگران یا نصب)
   if (!(await isLicenseValid())) {
     const phase = await licenseLockPhase();
     const staffTrialExempt = !ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER";
-    if (!staffTrialExempt) return { error: await licenseLockedResponseDetailed() };
+    const personalTrialActive =
+      !ctx.isAdmin &&
+      ctx.user.kind === "PUBLIC" &&
+      !!ctx.trialUntil &&
+      new Date(ctx.trialUntil).getTime() > Date.now();
+    if (!staffTrialExempt && !personalTrialActive) return { error: await licenseLockedResponseDetailed() };
   }
   if (section && !ctx.isAdmin && !ctx.sections.includes(section)) {
     return { error: forbidden(`دسترسی به بخش «${section}» برای شما فعال نیست یا منقضی شده است`) };
@@ -450,10 +457,18 @@ export async function requireAuth(
 
 /**
  * آیا «این کاربر» با قفل لایسنس مواجه است؟ — برای /api/auth/me و تصمیم UI
- * همان سیاست requireAuth: مالک آزاد؛ پرسنل فقط از قفل ترِیال معاف؛ بقیه در قفل (مهلت/پس از مهلت)
+ * همان سیاست requireAuth: مالک آزاد؛ ترِیال شخصی فعال کاربر عمومی آزاد؛
+ * پرسنل فقط از قفل ترِیال معاف؛ بقیه در قفل (مهلت/پس از مهلت)
  */
 export async function isUserLicenseLocked(ctx: AuthContext): Promise<boolean> {
   if (await isLicenseValid()) return false;
+  if (
+    !ctx.isAdmin &&
+    ctx.user.kind === "PUBLIC" &&
+    !!ctx.trialUntil &&
+    new Date(ctx.trialUntil).getTime() > Date.now()
+  )
+    return false;
   const phase = await licenseLockPhase();
   if (!ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER") return false;
   return true;
