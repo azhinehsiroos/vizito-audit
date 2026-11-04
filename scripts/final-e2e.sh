@@ -157,6 +157,71 @@ check "فعال‌سازی مجدد" "200" "$C"
 C=$(code 3100 staff POST /api/auth/login "{\"mobile\":\"$STAFF_MOBILE\",\"password\":\"$PASSWORD\"}")
 check "ورود پرسنل فعال شد" "200" "$C"
 
+echo "== ۴٫۵) امنیت فاکتور خرید در تسویه‌ها (مجوز purchase_price) =="
+# پرسنل فاقد مجوز purchase_price است؛ مدیر (isAdmin) دارای مجوز ضمنی است
+CU2=$(jget "$(rq 3100 staff POST /api/customers '{"name":"مشتری تسویه","phone":"09160000003","type":"STORE"}')" "d['id']")
+R=$(rq 3100 staff POST /api/orders "{\"customerId\":\"$CU2\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"کالای پرسنل\",\"quantity\":1,\"price\":12000}]}")
+OS2=$(jget "$R" "d['id']")
+check "پرسنل فاکتور عادی ثبت کرد" "True" "$(jget "$R" "bool(d['id'])")"
+C=$(code 3100 staff PUT "/api/orders/$OS2" '{"priceType":"PURCHASE","items":[{"productName":"کالای پرسنل","quantity":1,"price":12000}]}')
+check "ارتقای نوع فاکتور عادی به «خرید» بدون مجوز رد شد (403)" "403" "$C"
+C=$(code 3100 staff PUT "/api/orders/$OS2" '{"priceType":"PHARMACY","items":[{"productName":"کالای پرسنل","quantity":1,"price":12000}]}')
+check "تغییر نوع فاکتور به «دارویی» بدون مجوز خرید همچنان مجاز است (200)" "200" "$C"
+C=$(code 3100 staff PUT "/api/orders/$OS2" '{"priceType":"STORE","items":[{"productName":"کالای پرسنل","quantity":1,"price":12000}]}')
+check "بازگرداندن نوع فاکتور به «فروشگاهی» (200)" "200" "$C"
+R=$(rq 3100 admin POST /api/orders "{\"customerId\":\"$CU2\",\"priceType\":\"PURCHASE\",\"title\":\"فاکتور خرید\",\"items\":[{\"productName\":\"کالای خرید\",\"quantity\":2,\"price\":50000}]}")
+OP=$(jget "$R" "d['id']")
+check "مدیر فاکتور خرید ثبت کرد (۱۰۰هزار)" "True" "$(jget "$R" "d['priceType']=='PURCHASE' and bool(d['id'])")"
+R=$(rq 3100 admin POST /api/orders "{\"customerId\":\"$CU2\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"کالای فروشگاهی\",\"quantity\":1,\"price\":30000}]}")
+OS=$(jget "$R" "d['id']")
+check "مدیر فاکتور عادی ثبت کرد (۳۰هزار)" "True" "$(jget "$R" "bool(d['id'])")"
+R=$(rq 3100 admin POST /api/payments "{\"customerId\":\"$CU2\",\"orderId\":\"$OP\",\"type\":\"CASH\",\"amount\":40000}")
+PP=$(jget "$R" "d['id']")
+check "مدیر تسویه فاکتور خرید ثبت کرد (۴۰هزار)" "True" "$(jget "$R" "bool(d['id'])")"
+R=$(rq 3100 admin POST /api/payments "{\"customerId\":\"$CU2\",\"orderId\":\"$OS\",\"type\":\"CASH\",\"amount\":10000}")
+PS=$(jget "$R" "d['id']")
+check "مدیر تسویه فاکتور عادی ثبت کرد (۱۰هزار)" "True" "$(jget "$R" "bool(d['id'])")"
+R=$(rq 3100 admin POST /api/payments "{\"customerId\":\"$CU2\",\"type\":\"RECEIPT\",\"amount\":5000}")
+PF=$(jget "$R" "d['id']")
+check "مدیر تسویه مستقل از فاکتور ثبت کرد (۵هزار)" "True" "$(jget "$R" "bool(d['id'])")"
+R=$(rq 3100 staff GET "/api/payments?customerId=$CU2")
+check "تسویه فاکتور خرید برای فاقد مجوز نامرئی است" "False" "$(jget "$R" "str('$PP' in [p['id'] for p in d['payments']])")"
+check "تسویه فاکتور عادی برای فاقد مجوز دیده می‌شود" "True" "$(jget "$R" "str('$PS' in [p['id'] for p in d['payments']])")"
+check "تسویه مستقل برای فاقد مجوز دیده می‌شود" "True" "$(jget "$R" "str('$PF' in [p['id'] for p in d['payments']])")"
+check "تعداد تسویه‌های نمایان فاقد مجوز = ۲" "2" "$(jget "$R" "len(d['payments'])")"
+check "جمع پرداخت‌های فاقد مجوز فقط از مجازها (۱۵۰۰۰)" "15000" "$(jget "$R" "int(d['summary']['totalPaid'])")"
+check "جمع فاکتورهای فاقد مجوز بدون خرید (۴۲۰۰۰)" "42000" "$(jget "$R" "int(d['summary']['totalOrders'])")"
+check "مانده فاقد مجوز = ۲۷۰۰۰" "27000" "$(jget "$R" "int(d['summary']['balance'])")"
+C=$(code 3100 staff POST /api/payments "{\"customerId\":\"$CU2\",\"orderId\":\"$OP\",\"type\":\"CASH\",\"amount\":40000}")
+check "ثبت تسویه روی فاکتور خرید بدون مجوز رد شد (403)" "403" "$C"
+C=$(code 3100 staff POST /api/payments "{\"customerId\":\"$CU2\",\"orderId\":\"$OS\",\"type\":\"CASH\",\"amount\":3000}")
+check "ثبت تسویه روی فاکتور عادی توسط فاقد مجوز مجاز است (201)" "201" "$C"
+C=$(code 3100 staff POST /api/payments "{\"customerId\":\"$CU2\",\"type\":\"CASH\",\"amount\":2000}")
+check "ثبت تسویه مستقل توسط فاقد مجوز مجاز است (201)" "201" "$C"
+PS2=$(jget "$(rq 3100 staff GET "/api/payments?customerId=$CU2")" "[p['id'] for p in d['payments'] if p['amount']==3000][0]")
+R=$(rq 3100 staff GET "/api/payments?customerId=$CU2")
+check "تعداد تسویه‌های نمایان پس از افزودن = ۴" "4" "$(jget "$R" "len(d['payments'])")"
+check "جمع پرداخت‌های فاقد مجوز = ۲۰۰۰۰" "20000" "$(jget "$R" "int(d['summary']['totalPaid'])")"
+check "مانده فاقد مجوز = ۲۲۰۰۰" "22000" "$(jget "$R" "int(d['summary']['balance'])")"
+C=$(code 3100 staff DELETE "/api/payments/$PP")
+check "حذف تسویه فاکتور خرید توسط فاقد مجوز ← نامرئی (404)" "404" "$C"
+C=$(code 3100 staff DELETE "/api/payments/$PS2")
+check "حذف تسویه خودِ ثبت‌کننده روی فاکتور عادی مجاز است (200)" "200" "$C"
+R=$(rq 3100 admin GET "/api/payments?customerId=$CU2")
+check "مدیر همه تسویه‌ها را می‌بیند = ۴" "4" "$(jget "$R" "len(d['payments'])")"
+check "تسویه فاکتور خرید برای مدیر نمایان است" "True" "$(jget "$R" "str('$PP' in [p['id'] for p in d['payments']])")"
+check "جمع پرداخت‌های مدیر = ۵۷۰۰۰" "57000" "$(jget "$R" "int(d['summary']['totalPaid'])")"
+check "جمع فاکتورهای مدیر (با خرید) = ۱۴۲۰۰۰" "142000" "$(jget "$R" "int(d['summary']['totalOrders'])")"
+check "مانده مدیر = ۸۵۰۰۰" "85000" "$(jget "$R" "int(d['summary']['balance'])")"
+C=$(code 3100 admin PUT "/api/orders/$OS" '{"priceType":"PURCHASE","items":[{"productName":"کالای فروشگاهی","quantity":1,"price":30000}]}')
+check "تغییر نوع فاکتور به «خرید» توسط مدیر (دارای مجوز) مجاز است (200)" "200" "$C"
+R=$(rq 3100 staff GET "/api/payments?customerId=$CU2")
+check "پس از تغییر نوع، تسویه آن فاکتور برای فاقد مجوز نامرئی شد" "False" "$(jget "$R" "str('$PS' in [p['id'] for p in d['payments']])")"
+check "جمع پرداخت‌های فاقد مجوز پس از تغییر نوع = ۷۰۰۰" "7000" "$(jget "$R" "int(d['summary']['totalPaid'])")"
+check "جمع فاکتورهای فاقد مجوز پس از تغییر نوع = ۱۲۰۰۰ (خریدها حذف)" "12000" "$(jget "$R" "int(d['summary']['totalOrders'])")"
+C=$(code 3100 admin PUT "/api/orders/$OS" '{"priceType":"STORE","items":[{"productName":"کالای فروشگاهی","quantity":1,"price":30000}]}')
+check "بازگرداندن نوع فاکتور توسط مدیر (200)" "200" "$C"
+
 echo "== ۵) پایان ترِیال‌ها (ساعت سرور) — قفل‌ها و معافیت پرسنل =="
 node -e "
 const {DatabaseSync}=require('node:sqlite');

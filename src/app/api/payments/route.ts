@@ -26,9 +26,14 @@ export async function GET(req: NextRequest) {
   if (!customer) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
 
   const purchaseVisible = canSeePurchasePrice(auth.ctx);
+  // ممیزی امنیتی — تسویه‌های متصل به فاکتور خرید (PURCHASE) فقط برای دارای مجوز purchase_price
+  // دیده/شمرده می‌شوند؛ تسویه مستقل از فاکتور و تسویه سایر انواع فاکتور همیشه نمایان است
+  const paymentVisibility = purchaseVisible
+    ? {}
+    : { OR: [{ orderId: null }, { order: { priceType: { not: "PURCHASE" } } }] };
   const [payments, ordersSum, paidSum, discountSum] = await Promise.all([
     db.payment.findMany({
-      where: { customerId },
+      where: { customerId, ...paymentVisibility },
       include: { createdByUser: { select: { name: true } } },
       orderBy: { createdAt: "desc" },
     }),
@@ -40,11 +45,11 @@ export async function GET(req: NextRequest) {
     }),
     db.payment.aggregate({
       _sum: { amount: true },
-      where: { customerId },
+      where: { customerId, ...paymentVisibility },
     }),
     db.payment.aggregate({
       _sum: { discountAmount: true },
-      where: { customerId },
+      where: { customerId, ...paymentVisibility },
     }),
   ]);
 
@@ -109,6 +114,13 @@ export async function POST(req: NextRequest) {
       const order = await db.order.findUnique({ where: { id: orderId } });
       if (!order || order.customerId !== customerId) {
         return Response.json({ error: "فاکتور انتخاب‌شده متعلق به این مشتری نیست" }, { status: 400 });
+      }
+      // ممیزی امنیتی — ثبت تسویه روی فاکتور خرید فقط برای دارای مجوز purchase_price (سمت سرور)
+      if (order.priceType === "PURCHASE" && !canSeePurchasePrice(auth.ctx)) {
+        return Response.json(
+          { error: "شما اجازه ثبت تسویه برای فاکتور خرید را ندارید" },
+          { status: 403 }
+        );
       }
     }
 

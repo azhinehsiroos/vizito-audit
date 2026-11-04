@@ -107,6 +107,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
       typeof body.priceType === "string"
         ? inWhitelist(body.priceType, PRICE_TYPES, existing.priceType as (typeof PRICE_TYPES)[number])
         : existing.priceType;
+    // ممیزی امنیتی — تغییر نوع فاکتور به «خرید» (PURCHASE) فقط برای دارای مجوز purchase_price؛
+    // تلاش غیرمجاز برای ارتقای نوع فاکتور عادی ← ۴۰۳ (نوع‌های دیگر بدون تغییر)
+    if (priceType === "PURCHASE" && !canSeePurchasePrice(auth.ctx)) {
+      return Response.json(
+        { error: "شما اجازه ثبت فاکتور با نوع «خرید» را ندارید" },
+        { status: 403 }
+      );
+    }
     const settlementType = body.settlementType === undefined ? existing.settlementType : settlementTypeOrNull(body.settlementType);
     const dueDays = body.dueDays === undefined ? existing.dueDays : dueDaysOrNull(body.dueDays);
 
