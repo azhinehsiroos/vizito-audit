@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, canSeeAllCustomers, type AuthContext } from "@/lib/auth";
+import { requireAuth, canSeeAllCustomers, canSeePurchasePrice, type AuthContext } from "@/lib/auth";
 import { strField, strOrNull, inWhitelist, VALID_CUSTOMER_TYPES } from "@/lib/validate";
 
 type Params = { params: Promise<{ id: string }> };
@@ -28,6 +28,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     include: {
       orders: {
         orderBy: { createdAt: "desc" },
+        // ممیزی v1.1.2 — فاکتورهای خرید برای کاربر بدون مجوز purchase_price نمایش داده نمی‌شوند
+        ...(canSeePurchasePrice(auth.ctx) ? {} : { where: { priceType: { not: "PURCHASE" } } }),
         include: { items: true },
       },
     },
@@ -103,6 +105,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
         return Response.json({ ok: true, archived: false });
       } catch (e) {
         const code = (e as { code?: string })?.code || "";
+        if (code === "P2025") {
+          // ممیزی v1.1.2 — حذف هم‌زمان: مشتری همین حالا توسط درخواست دیگری حذف شده؛ هدف تأمین شده
+          return Response.json({ ok: true, archived: false });
+        }
         if (code === "P2003") {
           // رقابت واقعی: سابقه مالی همان لحظه ثبت شد — خارج از حلقه به آرشیو می‌رویم
           conflict = true;

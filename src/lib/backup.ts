@@ -55,7 +55,18 @@ export function isScheduleValue(v: unknown): v is ScheduleValue {
 }
 
 function ensureDir(): void {
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  // ممیزی v1.1.2 — دسترسی محدود پوشه (0o700): روی هاست اشتراکی، فایل‌های پشتیبان
+  // رمزنگاری‌شده نباید برای سایر مستأجرها خواندنی باشند
+  fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+}
+
+/** حذف فایل با ثبت خطا (بدون مسیر مطلق در لاگ) — حذف هرگز بی‌صدا شکست نمی‌خورد */
+async function rmFile(p: string): Promise<void> {
+  try {
+    await fs.promises.rm(p, { force: true });
+  } catch (e) {
+    console.error("backup file delete failed:", path.basename(p), (e as Error)?.message || e);
+  }
 }
 
 /** مسیر امن فایل — نام فایل فقط از دیتابیس می‌آید و هیچ «/» یا «..» پذیرفته نیست */
@@ -82,7 +93,9 @@ export async function setSchedule(value: ScheduleValue): Promise<void> {
 /** جمع‌آوری کامل داده‌های برنامه برای فایل پشتیبان */
 async function collectData() {
   // امنیت: authSessions (هش توکن‌های فعال) هرگز در بکاپ نمی‌آید — نشست‌ها قابل بازسازی نیستند و لازم نیست
-  const [users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings] = await Promise.all([
+  // ممیزی v1.1.2 — Message/MessageRecipient هم در بکاپ می‌آیند؛ نبودِ آن‌ها یعنی
+  // هر بازیابی، تاریخ پیام‌ها و وضعیت خوانده‌شدن را برای همیشه از دست می‌داد
+  const [users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients] = await Promise.all([
     db.user.findMany(),
     db.accessGrant.findMany(),
     db.customer.findMany(),
@@ -95,11 +108,13 @@ async function collectData() {
     db.licenseSale.findMany(),
     db.licenseCharge.findMany(),
     db.setting.findMany(),
+    db.message.findMany(),
+    db.messageRecipient.findMany(),
   ]);
   return {
     vizitoBackupVersion: BACKUP_VERSION,
     createdAt: new Date().toISOString(),
-    tables: { users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings },
+    tables: { users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients },
   };
 }
 
@@ -111,6 +126,7 @@ function countOf(data: Awaited<ReturnType<typeof collectData>>): string {
     products: t.products.length,
     orders: t.orders.length,
     payments: t.payments.length,
+    messages: t.messages.length,
   });
 }
 
@@ -178,20 +194,37 @@ export async function createBackup(
   const envelope = encryptBackup(JSON.stringify(data), installId);
   const buf = Buffer.from(JSON.stringify(envelope), "utf8");
   // نام فایل کاملاً سمت سرور تولید می‌شود
+  // ممیزی v1.1.2 — نوشتن اتمیک: ابتدا فایل موقت (مجوز 0o600) و سپس rename؛
+  // دیسکِ پر یا خطای نوشتن دیگر هرگز «فایل ناقص» با نام نهایی باقی نمی‌گذارد و
+  // شکست ثبت در دیتابیس هم فایل یتیم باقی نمی‌گذارد
   const fileName = `vizito-${kind.toLowerCase()}-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.json`;
-  fs.writeFileSync(path.join(BACKUP_DIR, fileName), buf);
-  const row = await db.backup.create({
-    data: {
-      kind,
-      fileName,
-      sizeBytes: buf.length,
-      counts: countOf(data),
-      createdBy: kind === "MANUAL" ? by?.id ?? null : null,
-      createdByName: kind === "MANUAL" ? by?.name?.slice(0, 80) ?? null : null,
-    },
-  });
-  await pruneOld(kind);
-  return row;
+  const finalPath = path.join(BACKUP_DIR, fileName);
+  const tmpPath = finalPath + ".tmp";
+  try {
+    fs.writeFileSync(tmpPath, buf, { mode: 0o600 });
+    fs.renameSync(tmpPath, finalPath);
+    const row = await db.backup.create({
+      data: {
+        kind,
+        fileName,
+        sizeBytes: buf.length,
+        counts: countOf(data),
+        createdBy: kind === "MANUAL" ? by?.id ?? null : null,
+        createdByName: kind === "MANUAL" ? by?.name?.slice(0, 80) ?? null : null,
+      },
+    });
+    await pruneOld(kind);
+    return row;
+  } catch (e) {
+    // هیچ فایل ناقص/یتیمی باقی نمی‌ماند — خطا به مسیر اصلی (API/زمان‌بند) برمی‌گردد
+    try {
+      fs.rmSync(finalPath, { force: true });
+    } catch {}
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {}
+    throw e;
+  }
 }
 
 /** حذف نسخه‌های قدیمی‌تر از سقف نگهداری (فایل + ردیف) */
@@ -204,7 +237,7 @@ async function pruneOld(kind: BackupKind): Promise<void> {
     });
     for (const row of old) {
       const p = safeBackupPath(row.fileName);
-      if (p) fs.rm(p, { force: true }, () => {});
+      if (p) await rmFile(p);
     }
     if (old.length > 0) {
       await db.backup.deleteMany({ where: { id: { in: old.map((r) => r.id) } } });
@@ -219,7 +252,7 @@ export async function deleteBackup(id: string): Promise<boolean> {
   const row = await db.backup.findUnique({ where: { id } });
   if (!row) return false;
   const p = safeBackupPath(row.fileName);
-  if (p) fs.rm(p, { force: true }, () => {});
+  if (p) await rmFile(p);
   await db.backup.delete({ where: { id } });
   return true;
 }
@@ -229,7 +262,7 @@ export async function deleteAllBackups(): Promise<void> {
   const rows = await db.backup.findMany();
   for (const row of rows) {
     const p = safeBackupPath(row.fileName);
-    if (p) fs.rm(p, { force: true }, () => {});
+    if (p) await rmFile(p);
   }
   await db.backup.deleteMany();
 }

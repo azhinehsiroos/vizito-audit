@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getAuth, unauthorized, forbidden, hashPassword, verifyPassword, passwordError, getTokenFromRequest, csrfGate } from "@/lib/auth";
+import { getAuth, unauthorized, forbidden, tooMany, hashPassword, verifyPassword, passwordError, getTokenFromRequest, csrfGate } from "@/lib/auth";
+import { dbRateLimit, dbRetryAfterSeconds } from "@/lib/rate-limit";
 
 /**
  * تغییر رمز عبور خود کاربر — هر کاربر واردشده
@@ -13,6 +14,12 @@ export async function POST(req: NextRequest) {
   if (csrf) return csrf;
   const ctx = await getAuth(req);
   if (!ctx) return unauthorized();
+  // ممیزی v1.1.2 — محدودیت نرخ: verifyPassword هزینه scrypt دارد؛ بدون سقف،
+  // نشست مختل‌شده می‌تواند رمز فعلی را حدس بزند یا CPU سرور را خسته کند
+  const pwKey = `pw:${ctx.user.id}`;
+  if (!(await dbRateLimit(pwKey, 10, 10 * 60 * 1000))) {
+    return tooMany(await dbRetryAfterSeconds(pwKey));
+  }
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";

@@ -58,8 +58,26 @@
 ## ۲. آپلود فایل‌ها
 
 **مسیر الف (بسته آماده):** فایل `vizito-prod-<نسخه>.zip` را در File Manager آپلود و داخل `/home/USERNAME/vizito` Extract کنید.
-این بسته شامل خروجی Standalone کامل (با موتورهای Prisma و sharp لینوکسی)، `server.cjs`، مهاجرت‌ها و مستندات است —
-**نیازی به npm install و build نیست؛ مستقیم به بخش ۵ (env) بروید.**
+
+> 📌 **دقت کنید — ساختار ZIP و پوشه نهایی:**
+> ZIP شامل یک پوشهٔ بیرونی `vizito-prod-<نسخه>/` است. پس از Extract، محتویات آن را (نه خود پوشه را)
+> به Application root منتقل کنید تا نتیجه چنین باشد — یعنی `server.cjs` مستقیماً در Application root باشد:
+>
+> ```
+> /home/USERNAME/vizito/            ← Application root
+> ├── server.cjs                    ← Application startup file
+> ├── .next/standalone/…            ← خروجی کامل برنامه (با موتورها)
+> ├── scripts/migrate-sqlite.cjs
+> ├── prisma/schema.prisma + migrations/
+> ├── package.json / .env.example
+> └── docs/DEPLOY-CPANEL-FA.md
+> ```
+>
+> در cPanel: فایل ZIP را در `/home/USERNAME/vizito` Extract کنید ⇒ پوشه `vizito-prod-<نسخه>` ساخته می‌شود ⇒
+> وارد آن شوید، همه را انتخاب و **Move** کنید به `/home/USERNAME/vizito` (یک سطح بالاتر). سپس پوشه خالی را حذف کنید.
+>
+> این بسته شامل خروجی Standalone کامل (با موتورهای Prisma و sharp لینوکسی)، `server.cjs`، مهاجرت‌ها و مستندات است —
+> **نیازی به npm install و build نیست؛ مستقیم به بخش ۵ (env) بروید.**
 
 **مسیر ب (سورس):** سورس را به یکی از این دو روش به `/home/USERNAME/vizito` برسانید:
 
@@ -122,7 +140,7 @@ npm ci        # دقیقاً همان نسخه‌های package-lock.json — ه
 | `SETUP_TOKEN` | ✅ فقط برای نصب تازه | کد تصادفی قوی — تولید: `openssl rand -hex 24` |
 | `OWNER_MOBILES` | اختیاری | موبایل‌های سازنده با کاما (دسترسی همیشگی) |
 | `OWNER_SETUP_KEY` | فقط با OWNER_MOBILES | کلید تصادفی قوی |
-| `TRUSTED_PROXY_HOPS` | اختیاری | `1` (پیش‌فرض Passenger روی cPanel) |
+| `TRUSTED_PROXY_HOPS` | اختیاری | `1` (پیش‌فرض Passenger روی cPanel) — ⚠️ برنامه برای اجرای پشت Passenger طراحی شده؛ روی اجرای مستقیم بدون پروکسی، هدر XFF قابل جعل است و مبنای IP قابل اعتماد نیست |
 | `VIZITO_ALLOWED_ORIGINS` | اختیاری | مبدأهای مجاز اضافی برای ضد CSRF — فقط اگر برنامه در iframe پنل دیگری باز می‌شود؛ wildcard پسوندی: `*.example.com` |
 | `LICENSE_PUBLIC_KEY_PEM` | معمولاً خالی | فقط برای چرخش کلید عمومی |
 | `LICENSE_PRIVATE_KEY_PEM` | ❌ روی سرور مشتری نگذارید | فقط سرور سازنده |
@@ -148,7 +166,7 @@ npm ci        # دقیقاً همان نسخه‌های package-lock.json — ه
 >
 > ```bash
 > cd /home/USERNAME/vizito
-> export DATABASE_URL="file:/home/myvizito/vizito/data/azhivan.db"
+> export DATABASE_URL="file:/home/USERNAME/vizito_data/vizito.db"
 > node scripts/migrate-sqlite.cjs     # یا: npm run db:migrate:prod
 > ```
 >
@@ -173,6 +191,12 @@ npm run deploy:package # ساخت download/vizito-prod-<نسخه>.zip — آما
 - Build روی ویندوز مشکلی ندارد: SWC فقط «زمان Build» لازم است (نسخه ویندوزی آن نصب می‌شود) و
   موتورهای لینوکسی Prisma/sharp طبق `binaryTargets` و `outputFileTracingIncludes` داخل Standalone قرار می‌گیرند.
 - خروجی `vizito-prod-<نسخه>.zip` شامل همه‌چیز به‌جز فایل‌های حساس است (`.env`، `keys/`، `db/` هیچ‌وقت داخلش نیست).
+- برای اطمینان از سلامت انتقال، checksum بسته را نگه دارید:
+
+```bash
+sha256sum download/vizito-prod-<نسخه>.zip
+# روی هاست پس از آپلود همان دستور را بزنید و مقدار را مقایسه کنید
+```
 
 ---
 
@@ -214,7 +238,7 @@ npm start        # = node server.cjs
 | `خروجی Standalone پیدا نشد` | `npm run build` را اجرا نکرده‌اید |
 | `پوشه ... قابل نوشتن نیست` | دسترسی پوشه `vizito_data` را به user هاست بدهید (`chown`) |
 | `migrate deploy ناموفق بود` | متن خطای بالای همان لاگ را ببینید (معمولاً دسترسی/مسیر) |
-| `OWNER_KEY_REQUIRED` هنگام ثبت‌نام سازنده | یعنی یا `OWNER_SETUP_KEY` روی هاست تنظیم نشده، یا کلید وارد‌شده با آن فرق دارد. لاگ سرور خط `register owner-key diag: {"ownerMobile":true,"expectedSet":…,"provided":…,"match":…}` را نشان می‌دهد: اگر `expectedSet:false` است ⇒ متغیر `OWNER_SETUP_KEY` را در پنل اضافه کنید و Restart بزنید؛ اگر `match:false` است ⇒ کلید را درست وارد کنید. (در لاگ فقط وضعیت بولی ثبت می‌شود — هیچ مقداری لاگ نمی‌شود) |
+| `OWNER_KEY_REQUIRED` هنگام ثبت‌نام سازنده | یعنی یا `OWNER_SETUP_KEY` روی هاست تنظیم نشده (رفتار fail-closed)، یا کلید وارد‌شده با آن فرق دارد. برای رفع: متغیر `OWNER_SETUP_KEY` را در پنل اضافه/تصحیح کنید و Restart بزنید. (ممیزی v1.1.1+: هیچ خطای تشخیصی از کلید در لاگ نوشته نمی‌شود — حتی وضعیت بولی؛ تنها پاسخ ۴۰۳ بدون جزئیات برگردانده می‌شود.) |
 
 ---
 
@@ -290,12 +314,15 @@ curl -X POST https://دامنه-شما/api/auth/login \
 BACKUP_ENCRYPTION_KEY="همان-کلید-سرور" npm run backup:decrypt -- /مسیر/فایل-پشتیبان.json -o restored.json
 ```
 
-خروجی `restored.json` شامل جدول‌های برنامه است. برای بازیابی کامل روی نصب تازه:
+خروجی `restored.json` شامل جدول‌های برنامه است (کاربران، گرنت‌ها، مشتریان، گروه‌ها، کالاها، سفارش‌ها،
+اقلام، تسویه‌ها، اعلان‌ها، دفتر فروش لایسنس، تنظیمات و **پیام‌ها و وضعیت خوانده‌شدن آن‌ها** — از نسخه ۱٫۱٫۲).
+برای بازیابی کامل روی نصب تازه:
 
 1. نصب تازه ویزیتو را بالا بیاورید (بخش‌های ۱ تا ۸) — دیتابیس خالی.
 2. محتوای جدول‌های `restored.json` را مطابق همان ساختار وارد دیتابیس کنید
    (با Prisma یا ابزار SQLite) — ترتیب پیشنهادی: `users` ← `productGroups` ← `products`
-   ← `customers` ← `orders` ← `orderItems` ← `payments` ← `notifications` ← `settings`.
+   ← `customers` ← `orders` ← `orderItems` ← `payments` ← `notifications` ← `settings`
+   ← `licenseSales` ← `licenseCharges` ← `messages` ← `messageRecipients`.
 3. یا ساده‌تر: از سازنده برنامه بخواهید نسخه را برایتان بازگرداند (فایل و کلید هر دو نزد شماست).
 
 > 🔐 نسخه پشتیبان را **خارج از هاست** هم نگه دارید (دانلود از پنل برنامه و ذخیره در جای امن).

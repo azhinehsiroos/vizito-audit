@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, canSeeAllCustomers, type AuthContext } from "@/lib/auth";
+import { requireAuth, canSeeAllCustomers, canSeePurchasePrice, type AuthContext } from "@/lib/auth";
 import { strField, strOrNull, clampNum, isFiniteDate } from "@/lib/validate";
 
 /** انواع تسویه مجاز: نقد / چک پای‌بار / رسید */
@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
   const customer = await customerInScope(customerId, auth.ctx);
   if (!customer) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
 
+  const purchaseVisible = canSeePurchasePrice(auth.ctx);
   const [payments, ordersSum, paidSum, discountSum] = await Promise.all([
     db.payment.findMany({
       where: { customerId },
@@ -32,9 +33,10 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     }),
     // مانده حساب فقط بر اساس فاکتورهای نهایی محاسبه می‌شود
+    // ممیزی v1.1.2 — فاکتورهای خرید برای کاربر بدون مجوز purchase_price در مانده هم نمی‌آیند
     db.order.aggregate({
       _sum: { totalAmount: true },
-      where: { customerId, status: "FINAL" },
+      where: { customerId, status: "FINAL", ...(purchaseVisible ? {} : { priceType: { not: "PURCHASE" } }) },
     }),
     db.payment.aggregate({
       _sum: { amount: true },
@@ -71,6 +73,13 @@ export async function POST(req: NextRequest) {
     if (!customerId) return Response.json({ error: "انتخاب مشتری الزامی است" }, { status: 400 });
     const customer = await customerInScope(customerId, auth.ctx);
     if (!customer) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
+    // ممیزی v1.1.2 — مشتری آرشیوشده خارج از چرخه فعال است؛ تسویه جدید روی او ثبت نمی‌شود
+    if (customer.archived) {
+      return Response.json(
+        { error: "این مشتری آرشیو شده است — برای ثبت تسویه ابتدا آن را از آرشیو خارج کنید" },
+        { status: 400 }
+      );
+    }
 
     // نوع تسویه الزامی است و فقط از لیست مجاز
     const type = strField(body.type, 20);
@@ -82,10 +91,13 @@ export async function POST(req: NextRequest) {
     if (amount <= 0) return Response.json({ error: "مبلغ تسویه باید بزرگ‌تر از صفر باشد" }, { status: 400 });
 
     // تخفیف نقدی: درصد + مبلغ بخشیده‌شده — فقط برای پرداخت نقدی معنا دارد
+    // ممیزی v1.1.2 — تخفیف نقدی از مبلغ دریافت‌شده بیشتر نیست (بخشیده‌شده روی همان مبلغ است)
     const discountPercent =
       type === "CASH" ? Math.min(100, Math.max(0, clampNum(body.discountPercent, 0, 100))) : 0;
     const discountAmount =
-      type === "CASH" ? Math.min(9_999_999_999, Math.max(0, clampNum(body.discountAmount, 0, 9_999_999_999))) : 0;
+      type === "CASH"
+        ? Math.min(amount, Math.max(0, clampNum(body.discountAmount, 0, 9_999_999_999)))
+        : 0;
 
     // تاریخ‌ها با همان الگوی اعتبارسنجی سفارش‌ها
     const paidAt = isFiniteDate(body.paidAt) ? new Date(body.paidAt as string) : null;

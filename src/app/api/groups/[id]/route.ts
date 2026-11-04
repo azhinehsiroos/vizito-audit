@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth } from "@/lib/auth";
+import { requireAuth, forbidden } from "@/lib/auth";
 import { strField } from "@/lib/validate";
 import { notifyCatalogChange } from "@/lib/notify";
 
@@ -25,6 +25,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req, "products");
   if ("error" in auth) return auth.error;
+  // امنیت (ممیزی v1.1.2) — حذف گروه، «همه» کالاهای آن را هم cascade می‌کند؛
+  // این عمل مخرب کاتالوگ مشترک فقط توسط مدیر ممکن است
+  if (!auth.ctx.isAdmin) {
+    return forbidden("حذف گروه کالا فقط توسط مدیر امکان‌پذیر است");
+  }
   const { id } = await params;
   try {
     const group = await db.productGroup.findUnique({ where: { id } });

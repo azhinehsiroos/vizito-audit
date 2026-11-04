@@ -175,8 +175,19 @@ export function BackupView() {
     if (!resetPassword) return;
     setResetting(true);
     try {
-      await api("/api/admin/reset", { method: "POST", body: { password: resetPassword } });
-      toast({ title: "پاک‌سازی کامل انجام شد", description: "برنامه به حالت راه‌اندازی اولیه بازگشت" });
+      const res = await api<{ ok: boolean; backupsDeleted?: boolean }>("/api/admin/reset", {
+        method: "POST",
+        body: { password: resetPassword },
+      });
+      if (res?.backupsDeleted === false) {
+        toast({
+          title: "پاک‌سازی انجام شد ولی حذف فایل‌های پشتیبان ناموفق بود",
+          description: "پوشه backups مسیر داده‌ها را روی هاست دستی بررسی کنید",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "پاک‌سازی کامل انجام شد", description: "همه داده‌ها حذف شدند — حساب سازنده باقی مانده است" });
+      }
       setResetOpen(false);
       setResetPassword("");
       // همه نشست‌ها حذف شده‌اند — پاک‌سازی کلاینت و بازگشت به صفحه ورود
@@ -362,7 +373,8 @@ export function BackupView() {
         </CardContent>
       </Card>
 
-      {/* منطقه خطر — پاک‌سازی کامل برای خروجی نهایی */}
+      {/* منطقه خطر — پاک‌سازی کامل (فقط سازنده برنامه) */}
+      {me?.isOwner ? (
       <Card className="border-destructive/40">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2 text-destructive">
@@ -370,15 +382,15 @@ export function BackupView() {
             پاک‌سازی کامل اطلاعات (خروجی نهایی)
           </CardTitle>
           <CardDescription>
-            قبل از انتشار یا تحویل برنامه، همه داده‌های آزمایشی حذف می‌شوند.
+            قبل از تحویل یا شروع مجدد، همه داده‌ها حذف می‌شوند — فقط سازندهٔ برنامه به این عملیات دسترسی دارد.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <ul className="text-[11px] text-muted-foreground leading-6 list-disc pr-4">
-            <li>همه کاربران — شامل حساب مدیر فعلی — حذف می‌شوند</li>
-            <li>همه مشتریان، کالاها، گروه‌ها، سفارشات و تنظیمات (لوگو و کد دعوت) پاک می‌شوند</li>
+            <li>همه کاربران — به‌جز حساب سازنده — حذف می‌شوند</li>
+            <li>همه مشتریان، کالاها، گروه‌ها، سفارشات، پیام‌ها و تنظیمات (لوگو و کد دعوت) پاک می‌شوند</li>
             <li>همه نسخه‌های پشتیبان هم حذف می‌شوند تا هیچ داده‌ای باقی نماند</li>
-            <li>برنامه به حالت راه‌اندازی اولیه برمی‌گردد؛ اولین ثبت‌نام بعدی، مدیر کل خواهد بود</li>
+            <li>برنامه خالی می‌شود و حساب شما (سازنده) باقی می‌ماند؛ برای تحویل کاملاً تازه، متغیرهای OWNER_MOBILES را از env حذف کنید</li>
           </ul>
           <Separator />
           <Button variant="destructive" className="w-full" onClick={() => setResetOpen(true)}>
@@ -387,6 +399,7 @@ export function BackupView() {
           </Button>
         </CardContent>
       </Card>
+      ) : null}
 
       {/* تأیید پاک‌سازی با رمز مدیر */}
       <Dialog open={resetOpen} onOpenChange={(v) => { setResetOpen(v); if (!v) setResetPassword(""); }}>
@@ -397,7 +410,7 @@ export function BackupView() {
               پاک‌سازی کامل برنامه
             </DialogTitle>
             <DialogDescription>
-              این عمل قابل بازگشت نیست و همه اطلاعات (حتی حساب مدیر) برای همیشه حذف می‌شود. برای تأیید، رمز عبور مدیر را وارد کنید.
+              این عمل قابل بازگشت نیست و همه داده‌ها (به‌جز حساب سازنده) برای همیشه حذف می‌شوند. برای تأیید، رمز عبور سازنده را وارد کنید.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">

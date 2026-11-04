@@ -64,6 +64,17 @@ export async function POST(req: NextRequest) {
       customer: payload.n,
     });
   } catch (e) {
-    return Response.json({ error: (e as Error).message || "خطا در فعال‌سازی لایسنس" }, { status: 400 });
+    // امنیت (ممیزی v1.1.2) — فقط پیام‌های کنترل‌شدهٔ خود برنامه به کلاینت برمی‌گردند؛
+    // خطاهای دیتابیس/داخلی (که جزئیات ساختار را افشا می‌کنند) هرگز خام پاس نمی‌شوند
+    const msg = (e as Error)?.message || "";
+    const controlled = ["کلید لایسنس نامعتبر است", "این کلید برای این نصب صادر نشده است"];
+    return Response.json(
+      {
+        error: controlled.includes(msg)
+          ? msg
+          : "خطا در فعال‌سازی لایسنس — کلید را بررسی کنید یا با سازنده تماس بگیرید",
+      },
+      { status: 400 }
+    );
   }
 }

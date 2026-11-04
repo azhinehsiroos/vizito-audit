@@ -190,7 +190,8 @@ export async function POST(req: NextRequest) {
       // ثبت‌نام‌های بعدی فقط با کد دعوت مدیر — استثنا: سازنده با کلید راه‌اندازی معتبر
       if (!isFirst && !ownerSetupOk) {
         const invite = await tx.setting.findUnique({ where: { key: INVITE_KEY } });
-        if (!invite || !inviteCode || inviteCode !== invite.value) {
+        // ممیزی v1.1.2 — مقایسه امن زمانی (هم‌تراز با SETUP_TOKEN/OWNER_SETUP_KEY)
+        if (!invite || !inviteCode || !safeEq(inviteCode, invite.value)) {
           throw new RegisterAbort(
             Response.json(
               { error: "ثبت‌نام فقط با کد دعوت مدیر امکان‌پذیر است" },

@@ -130,6 +130,17 @@ export async function runDataRetentionSweep(
     if (st.phase !== "SWEEP_DUE") return { ran: false, phase: st.phase, reason: "phase-not-due" };
     if (st.paused) return { ran: false, phase: "SWEEP_DUE", reason: "paused-by-owner" };
 
+    // شفافیت (ممیزی v1.1.2) — اگر OWNER_MOBILES تنظیم نباشد، هیچ حساب مالکی وجود ندارد
+    // و مطابق قرارداد v1.1.0 همه حساب‌های ADMIN «غیرِ مالک» هستند (حذف می‌شوند؛ پرسنل حفظ).
+    // این رفتار عمداً حفظ شده — تغییر آن قرارداد نسخه‌های قبل را می‌شکند (تست final-e2e).
+    const ownerMobiles = (process.env.OWNER_MOBILES || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ownerMobiles.length === 0) {
+      console.warn("vizito-retention: OWNER_MOBILES not set — all ADMIN accounts are treated as non-owner");
+    }
+
     // ۱) پشتیبان — بدون پشتیبان معتبر هیچ حذفی انجام نمی‌شود
     let backupInfo: DeletedLog["backup"] = null;
     try {
@@ -147,10 +158,6 @@ export async function runDataRetentionSweep(
     const counts = await countBusinessData();
 
     // ۳) حذف کنترل‌شده داخل یک تراکنش — حساب‌های مالک و پرسنل دست‌نخورده می‌مانند
-    const ownerMobiles = (process.env.OWNER_MOBILES || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
     const deletedUsers = await db.$transaction(async (tx) => {
       await tx.payment.deleteMany({});
       await tx.orderItem.deleteMany({});

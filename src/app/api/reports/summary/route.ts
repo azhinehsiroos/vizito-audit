@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, canSeeAllCustomers } from "@/lib/auth";
+import { requireAuth, canSeeAllCustomers, canSeePurchasePrice } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "reports");
@@ -9,9 +9,12 @@ export async function GET(req: NextRequest) {
     // آمار هر کاربر فقط در محدوده دسترسی خودش: مدیر/دارای all_customers ← همه؛ بقیه فقط مشتری‌ها و سفارش‌های خودشان
     const allAccess = canSeeAllCustomers(auth.ctx);
     const customerWhere = allAccess ? {} : { createdBy: auth.ctx.user.id };
-    const orderWhere = allAccess
-      ? {}
-      : { OR: [{ customer: { createdBy: auth.ctx.user.id } }, { createdByUserId: auth.ctx.user.id }] };
+    // ممیزی v1.1.2 — فاکتورهای خرید (نوع PURCHASE) برای کاربر بدون مجوز purchase_price
+    // در آمار فروش هم نمی‌آیند (خودِ فاکتور هم برای او نمایش داده نمی‌شود)
+    const orderWhere = {
+      ...(allAccess ? {} : { OR: [{ customer: { createdBy: auth.ctx.user.id } }, { createdByUserId: auth.ctx.user.id }] }),
+      ...(canSeePurchasePrice(auth.ctx) ? {} : { priceType: { not: "PURCHASE" as const } }),
+    };
 
     const [customerCount, productCount, groupCount, orders, orderCount] = await Promise.all([
       db.customer.count({ where: customerWhere }),

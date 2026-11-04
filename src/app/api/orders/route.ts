@@ -11,10 +11,11 @@ const MANUAL_PRICE_CAP = 1_000_000_000;
 /** نحوه تسویه قابل ثبت روی فاکتور */
 const VALID_SETTLEMENT_TYPES = ["CASH", "CHECK", "RECEIPT"] as const;
 
-/** فقط مقدار مجاز قبول است؛ در غیر این صورت null (انتخاب نشده) */
+/** فقط مقدار مجاز قبول است؛ در غیر این صورت null (انتخاب نشده) — مقایسه بدون حساسیت به بزرگی/کوچکی حروف */
 function settlementTypeOrNull(v: unknown): (typeof VALID_SETTLEMENT_TYPES)[number] | null {
-  return typeof v === "string" && (VALID_SETTLEMENT_TYPES as readonly string[]).includes(v)
-    ? (v as (typeof VALID_SETTLEMENT_TYPES)[number])
+  const s = typeof v === "string" ? v.trim().toUpperCase() : "";
+  return (VALID_SETTLEMENT_TYPES as readonly string[]).includes(s)
+    ? (s as (typeof VALID_SETTLEMENT_TYPES)[number])
     : null;
 }
 
@@ -43,6 +44,9 @@ export async function GET(req: NextRequest) {
   const orders = await db.order.findMany({
     where: {
       ...orderScope(auth.ctx),
+      // ممیزی v1.1.2 — فاکتور خرید (نوع قیمت PURCHASE) خودِ داده‌ی قیمت خرید است؛
+      // برای کاربر بدون مجوز purchase_price دیده نمی‌شود (مثل خودِ قیمت خرید در کاتالوگ)
+      ...(canSeePurchasePrice(auth.ctx) ? {} : { priceType: { not: "PURCHASE" } }),
       ...(customerId ? { customerId } : {}),
       ...(isFiniteDate(from) || isFiniteDate(to)
         ? {
@@ -70,6 +74,13 @@ export async function POST(req: NextRequest) {
     if (!customerId) return Response.json({ error: "انتخاب مشتری الزامی است" }, { status: 400 });
     const customer = await db.customer.findUnique({ where: { id: customerId } });
     if (!customer) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
+    // ممیزی v1.1.2 — مشتری آرشیوشده خارج از چرخه فعال است؛ سفارش جدید روی او ثبت نمی‌شود
+    if (customer.archived) {
+      return Response.json(
+        { error: "این مشتری آرشیو شده است — برای ثبت سفارش ابتدا آن را از آرشیو خارج کنید" },
+        { status: 400 }
+      );
+    }
     // ثبت سفارش فقط برای مشتری‌های داخل محدوده دسترسی کاربر
     if (!canSeeAllCustomers(auth.ctx) && customer.createdBy !== auth.ctx.user.id) {
       return Response.json(

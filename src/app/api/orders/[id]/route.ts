@@ -39,6 +39,10 @@ export async function GET(req: NextRequest, { params }: Params) {
   if (!order || !orderInScope(order, auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
+  // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price دیده نمی‌شود (۴۰۴ بدون افشا)
+  if (order.priceType === "PURCHASE" && !canSeePurchasePrice(auth.ctx)) {
+    return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
+  }
   return Response.json(order);
 }
 
@@ -48,6 +52,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const order = await db.order.findUnique({ where: { id }, include: { customer: true } });
   if (!order || !orderInScope(order, auth.ctx)) {
+    return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
+  }
+  // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price قابل مشاهده/تغییر نیست
+  if (order.priceType === "PURCHASE" && !canSeePurchasePrice(auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
   // امنیت: حذف فاکتور فقط توسط مدیر یا ثبت‌کننده — مثل ویرایش
@@ -75,6 +83,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const existing = await db.order.findUnique({ where: { id }, include: { customer: true } });
   if (!existing || !orderInScope(existing, auth.ctx)) {
+    return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
+  }
+  // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price قابل ویرایش نیست
+  if (existing.priceType === "PURCHASE" && !canSeePurchasePrice(auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
   if (!auth.ctx.isAdmin && existing.createdByUserId !== auth.ctx.user.id) {
@@ -140,7 +152,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       if (quantity <= 0) continue;
       const discount = num(it.discount, 0, 100);
       const productId = strOrNull(it.productId, 40);
-      let price = num(it.price, 0, 99_999_999_999);
+      let price = num(it.price, 0, 9_999_999_999); // ممیزی v1.1.2 — سقف یکسان با مسیر ایجاد (قبلاً ۱۰ برابر بود)
       let volume = strOrNull(it.volume, 40);
       let name = productName;
       const p = productId ? productMap.get(productId) : undefined;
@@ -153,7 +165,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
         //  - کاربر عادی: قیمت ثبت‌شدهٔ کاتالوگ (>۰) ملاک است؛ کالای بدون قیمت ← قیمت دستی
         const catalogPrice = p[priceFieldFor(effectiveType)];
         if (auth.ctx.isAdmin || catalogPrice <= 0) {
-          price = Math.min(price, auth.ctx.isAdmin ? 99_999_999_999 : MANUAL_PRICE_CAP);
+          price = Math.min(price, auth.ctx.isAdmin ? 9_999_999_999 : MANUAL_PRICE_CAP);
         } else {
           price = catalogPrice;
         }
