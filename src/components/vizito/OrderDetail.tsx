@@ -11,24 +11,65 @@ import { PdfBrandHeader, PdfFooter, PdfSettlementBlock, th, td, theadStyle, INK,
 import { SettlementChecklist, type OrderWithSettlement } from "@/components/vizito/SettlementSection";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
+import { orderOutboxGet, type OrderOutboxItem } from "@/lib/idb";
 import { formatJalali, formatJalaliDateTime, formatMoney, toFa } from "@/lib/jalali";
 import { priceTypeLabel } from "@/lib/sections";
 import type { Order } from "@/lib/types";
 import { toast } from "@/hooks/use-toast";
-import { ClipboardList, Gift, Pencil, Trash2, User, Building2, Phone, MapPin } from "lucide-react";
+import { ClipboardList, Gift, Pencil, Trash2, User, Building2, Phone, MapPin, CloudOff } from "lucide-react";
+
+/** تبدیل آیتم صف آفلاین به ساختار Order برای همان رندر موجود */
+function outboxToOrder(p: OrderOutboxItem): OrderWithSettlement {
+  return {
+    id: p.clientRef,
+    customerId: p.customerId,
+    customer: {
+      id: p.customerId,
+      name: p.customerName,
+      company: null,
+      phone: "",
+      address: null,
+      nationalId: null,
+      type: "",
+      createdAt: p.createdAt,
+    },
+    title: p.title,
+    priceType: p.priceType,
+    status: "FINAL",
+    totalAmount: p.totalAmount,
+    settlementType: p.settlementType,
+    dueDays: p.dueDays,
+    note: p.note,
+    createdAt: p.createdAt,
+    items: p.items.map((it, i) => ({ ...it, id: `${p.clientRef}-${i}` })),
+    createdOffline: true,
+  } as OrderWithSettlement;
+}
 
 export function OrderDetail() {
   const { params, setView } = useApp();
+  // params.offline=1 — سفارش آفلاین از صف محلی (هنوز روی سرور نیست)
+  const isOfflineOrder = params.offline === "1";
   const [order, setOrder] = useState<OrderWithSettlement | null>(null);
 
   const load = useCallback(async () => {
+    if (isOfflineOrder) {
+      const item = await orderOutboxGet(params.orderId);
+      if (item) {
+        setOrder(outboxToOrder(item));
+      } else {
+        toast({ title: "خطا", description: "این سفارش آفلاین یافت نشد (احتمالاً همگام شده است)", variant: "destructive" });
+        setView("orders");
+      }
+      return;
+    }
     try {
       const o = await api<Order>(`/api/orders/${params.orderId}`);
       setOrder(o);
     } catch (e) {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
     }
-  }, [params.orderId]);
+  }, [params.orderId, params.offline, isOfflineOrder, setView]);
 
   useEffect(() => {
     load();
@@ -61,25 +102,50 @@ export function OrderDetail() {
       <div className="flex items-center justify-between">
         <h1 className="font-bold text-lg">فاکتور سفارش</h1>
         <div className="flex gap-1">
+          {/* سفارش آفلاین هنوز روی سرور نیست — ویرایش/حذف سروری ندارد (پس از همگام‌سازی قابل ویرایش است) */}
+          {!isOfflineOrder && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setView("order-edit", { orderId: order.id, ...(params.customerId ? { customerId: params.customerId } : {}) })}
+            >
+              <Pencil className="h-4 w-4" /> ویرایش
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => setView("order-edit", { orderId: order.id, ...(params.customerId ? { customerId: params.customerId } : {}) })}
-          >
-            <Pencil className="h-4 w-4" /> ویرایش
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => (params.customerId ? setView("customer-profile", { customerId: params.customerId }) : setView("orders"))}
+            onClick={() =>
+              isOfflineOrder
+                ? setView("orders")
+                : params.customerId
+                  ? setView("customer-profile", { customerId: params.customerId })
+                  : setView("orders")
+            }
           >
             بازگشت
           </Button>
-          <Button size="sm" variant="ghost" className="text-destructive" onClick={remove}>
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          {!isOfflineOrder && (
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={remove}>
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* نشان سفارش آفلاین — بخش ۵.۳ سند: برچسب «ثبت‌شده در حالت آفلاین» */}
+      {isOfflineOrder && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>
+            <b>ثبت‌شده در حالت آفلاین</b> — در انتظار همگام‌سازی؛ پس از بازگشت اتصال خودکار برای سرور ارسال می‌شود
+            (هیچ داده‌ای از دست نمی‌رود).
+          </span>
+        </div>
+      )}
 
       {/* خروجی PDF */}
       <Card>
@@ -184,16 +250,35 @@ export function OrderDetail() {
 
       {/* سند PDF مخفی */}
       <OffscreenDoc id="invoice-doc">
-        <InvoiceDocument order={order} />
+        <InvoiceDocument order={order} offlineRecorded={isOfflineOrder} />
       </OffscreenDoc>
     </div>
   );
 }
 
-function InvoiceDocument({ order }: { order: OrderWithSettlement }) {
+function InvoiceDocument({ order, offlineRecorded }: { order: OrderWithSettlement; offlineRecorded?: boolean }) {
   return (
     <div style={{ padding: "36px 32px", minHeight: 1100 }}>
       <PdfBrandHeader title="فاکتور سفارش" />
+
+      {/* برچسب ثبت آفلاین — روی فاکتور چاپی هم می‌ماند (بخش ۵.۳ سند) */}
+      {offlineRecorded && (
+        <div
+          style={{
+            marginTop: 8,
+            border: "1px dashed #b45309",
+            background: "#fef3c7",
+            color: "#92400e",
+            borderRadius: 8,
+            padding: "8px 12px",
+            fontSize: 11,
+            fontWeight: 700,
+            textAlign: "center",
+          }}
+        >
+          این فاکتور در حالت آفلاین ثبت شده است (در انتظار ثبت در سرور)
+        </div>
+      )}
 
       {/* مشخصات */}
       <div style={{ display: "flex", gap: 12, marginTop: 4 }}>

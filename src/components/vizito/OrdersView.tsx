@@ -27,6 +27,8 @@ import { api } from "@/lib/api";
 import { formatMoney, formatJalali, toFa } from "@/lib/jalali";
 import { visiblePriceTypes, priceOfProduct, priceTypeLabel } from "@/lib/sections";
 import type { Customer, Order, ProductGroup } from "@/lib/types";
+import { orderOutboxAdd, orderOutboxList, type OrderOutboxItem } from "@/lib/idb";
+import { getDeviceId, newClientRef, readSnapshot, mirror, isOnline as isOnlineNow } from "@/lib/offline";
 import { toast } from "@/hooks/use-toast";
 import { InvoiceSettlementFields, type InvoiceSettlementValue } from "@/components/vizito/SettlementSection";
 import {
@@ -42,6 +44,7 @@ import {
   X,
   Lock,
   Check,
+  CloudOff,
 } from "lucide-react";
 
 /**
@@ -57,19 +60,43 @@ type DraftItem = {
   offer: string; // آفر دستی — خالی
 };
 
+/** ردیف فهرست — سفارش سرور یا آیتم صف آفلاین (pendingOffline) */
+type OrderRow = Order & { pendingOffline?: boolean; clientRef?: string; lastError?: string | null };
+
 export function OrdersView() {
   const { setView } = useApp();
-  const [orders, setOrders] = useState<Order[] | null>(null);
+  const [orders, setOrders] = useState<OrderRow[] | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
 
   const load = useCallback(async () => {
+    // صف آفلاین همیشه ترکیب می‌شود — آنلاین کنار داده سرور، آفلاین به‌تنهایی (بخش ۵.۲:
+    // «مشاهده سفارش‌های آفلاین ثبت‌شده» حتی در قطعی)
+    const pending = await orderOutboxList();
+    const pendingRows: OrderRow[] = pending.map((p) => ({
+      id: p.clientRef,
+      clientRef: p.clientRef,
+      customerId: p.customerId,
+      title: p.title,
+      priceType: p.priceType,
+      status: "FINAL",
+      totalAmount: p.totalAmount,
+      note: p.note,
+      createdAt: p.createdAt,
+      items: p.items.map((it, i) => ({ ...it, id: `${p.clientRef}-${i}` })),
+      pendingOffline: true,
+      lastError: p.lastError,
+    }));
     try {
       const [o, c] = await Promise.all([api<Order[]>("/api/orders"), api<Customer[]>("/api/customers")]);
-      setOrders(o);
       setCustomers(c);
-    } catch (e) {
-      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
-      setOrders([]);
+      // آینه‌سازی اسنپ‌شات برای حالت آفلاین بعدی
+      void mirror("customers", c);
+      setOrders([...pendingRows, ...o]);
+    } catch {
+      // قطعی — اسنپ‌شات مشتریان + فقط سفارش‌های آفلاین
+      const snap = await readSnapshot<Customer[]>("customers");
+      if (snap) setCustomers(snap.value);
+      setOrders(pendingRows);
     }
   }, []);
 
@@ -79,8 +106,12 @@ export function OrdersView() {
 
   const customerName = (id: string) => customers.find((c) => c.id === id)?.name || "—";
 
-  const openDetail = (o: Order) => {
-    setView("order-detail", { orderId: o.id });
+  const openDetail = (o: OrderRow) => {
+    if (o.pendingOffline && o.clientRef) {
+      setView("order-detail", { orderId: o.clientRef, offline: "1", ...(o.customerId ? { customerId: o.customerId } : {}) });
+    } else {
+      setView("order-detail", { orderId: o.id });
+    }
   };
 
   return (
@@ -118,11 +149,21 @@ export function OrdersView() {
                       <Badge variant="secondary" className="text-[9px]">
                         {visiblePriceTypes(true).find((t) => t.key === o.priceType)?.label || o.priceType}
                       </Badge>
+                      {o.pendingOffline && (
+                        <Badge className="text-[9px] bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-0 gap-1">
+                          <CloudOff className="h-2.5 w-2.5" /> در انتظار همگام‌سازی
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-[10px] text-muted-foreground mt-1">
                       {toFa(o.items?.length ?? 0)} ردیف • {formatJalali(o.createdAt)}
                       {o.title ? ` • ${o.title}` : ""}
                     </div>
+                    {o.pendingOffline && o.lastError && (
+                      <div className="text-[10px] text-rose-600 dark:text-rose-400 mt-1 bg-rose-500/10 rounded px-1.5 py-0.5 w-fit">
+                        خطای همگام‌سازی: {o.lastError}
+                      </div>
+                    )}
                   </div>
                   <div className="text-left shrink-0">
                     <div className="font-black text-sm text-primary">{formatMoney(o.totalAmount)}</div>
@@ -139,7 +180,7 @@ export function OrdersView() {
 }
 
 export function OrderForm() {
-  const { setView, params, can } = useApp();
+  const { setView, params, can, online, setPendingOrders } = useApp();
   const canPurchase = can("purchase_price");
   // حالت ویرایش: در صورت داشتن params.orderId فرم از سفارش موجود پیش‌پر می‌شود
   const editId = params.orderId;
@@ -170,77 +211,114 @@ export function OrderForm() {
   useEffect(() => {
     let cancelled = false;
     const boot = async () => {
+      // ویرایش فاکتور فقط آنلاین ممکن است — سفارش آفلاین در صف است و هنوز روی سرور نیست
+      if (editId && !isOnlineNow()) {
+        toast({
+          title: "حالت آفلاین",
+          description: "ویرایش فاکتور در حالت آفلاین ممکن نیست — پس از اتصال دوباره تلاش کنید",
+          variant: "destructive",
+        });
+        setView("orders");
+        return;
+      }
+      // آنلاین ← از سرور؛ قطعی ← اسنپ‌شات آخرین همگام‌سازی (فقط خواندن)
+      let c: Customer[] = [];
+      let g: ProductGroup[] = [];
       try {
-        const [c, g] = await Promise.all([api<Customer[]>("/api/customers"), api<ProductGroup[]>("/api/groups")]);
+        [c, g] = await Promise.all([api<Customer[]>("/api/customers"), api<ProductGroup[]>("/api/groups")]);
         if (cancelled) return;
         setCustomers(c);
         setGroups(g);
-
-        // ویرایش فاکتور موجود — پیش‌پرکردن فرم از سفارش ثبت‌شده (پیش‌نویس پروفایل نادیده گرفته می‌شود)
-        if (editId) {
-          const order = await api<Order>(`/api/orders/${editId}`);
-          if (cancelled) return;
-          setCustomerId(order.customerId);
-          setLockedCustomer(true);
-          setFromProfile(false);
-          setTitle(order.title || "");
-          setPriceType(order.priceType || "STORE");
-          setNote(order.note || "");
-          setSettlement({
-            settlementType: order.settlementType || "",
-            dueDays: order.dueDays ? String(order.dueDays) : "",
+        // آینه‌سازی اسنپ‌شات — منبع سفارش‌گیری آفلاین بعدی (بخش ۵.۲ سند)
+        void mirror("customers", c);
+        void mirror("groups", g);
+      } catch {
+        const [cs, gs] = await Promise.all([
+          readSnapshot<Customer[]>("customers"),
+          readSnapshot<ProductGroup[]>("groups"),
+        ]);
+        if (cancelled) return;
+        if (cs) {
+          c = cs.value;
+          setCustomers(c);
+        }
+        if (gs) {
+          g = gs.value;
+          setGroups(g);
+        }
+        if (!cs && !gs) {
+          toast({
+            title: "حالت آفلاین",
+            description: "هیچ داده همگام‌سازی‌شده‌ای روی این دستگاه نیست — پس از اتصال دوباره تلاش کنید",
+            variant: "destructive",
           });
-          setItems(
-            (order.items || []).map((it) => ({
-              // ردیف‌های بدون کالای واقعی (دستی) با کلید مصنوعی و بدون productId واقعی
-              productId: it.productId || `manual-${it.id}`,
-              productName: it.productName,
-              quantity: it.quantity,
-              volume: it.volume || "",
-              price: it.price,
-              discount: it.discount,
-              offer: it.offer || "",
-            }))
-          );
+          setView("orders");
           return;
         }
-
-        // ورود از پروفایل مشتری؟
-        const draft = useApp.getState().invoiceDraft;
-        if (draft && draft.customerId) {
-          const cust = c.find((x) => x.id === draft.customerId);
-          const pt = cust ? defaultTypeFor(cust.type) : "STORE";
-          setCustomerId(draft.customerId);
-          setLockedCustomer(true);
-          setFromProfile(true);
-          setPriceType(pt);
-          const built: DraftItem[] = [];
-          for (const [pid, sel] of Object.entries(draft.selections)) {
-            const product = g.flatMap((gr) => gr.products).find((p) => p.id === pid);
-            if (!product) continue;
-            built.push({
-              productId: product.id,
-              productName: product.name,
-              volume: product.volume || "",
-              price: priceOfProduct(product, pt),
-              discount: product.discount,
-              quantity: sel.quantity || 1,
-              offer: sel.offer || "",
-            });
-          }
-          setItems(built);
-          useApp.getState().setInvoiceDraft(null);
-        } else if (params.customerId) {
-          setCustomerId(params.customerId);
-          setFromProfile(true);
-          const cust = c.find((x) => x.id === params.customerId);
-          if (cust) setPriceType(defaultTypeFor(cust.type));
-        }
-      } catch (e) {
-        toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+
+      // ویرایش فاکتور موجود — پیش‌پرکردن فرم از سفارش ثبت‌شده (پیش‌نویس پروفایل نادیده گرفته می‌شود)
+      if (editId) {
+        const order = await api<Order>(`/api/orders/${editId}`);
+        if (cancelled) return;
+        setCustomerId(order.customerId);
+        setLockedCustomer(true);
+        setFromProfile(false);
+        setTitle(order.title || "");
+        setPriceType(order.priceType || "STORE");
+        setNote(order.note || "");
+        setSettlement({
+          settlementType: order.settlementType || "",
+          dueDays: order.dueDays ? String(order.dueDays) : "",
+        });
+        setItems(
+          (order.items || []).map((it) => ({
+            // ردیف‌های بدون کالای واقعی (دستی) با کلید مصنوعی و بدون productId واقعی
+            productId: it.productId || `manual-${it.id}`,
+            productName: it.productName,
+            quantity: it.quantity,
+            volume: it.volume || "",
+            price: it.price,
+            discount: it.discount,
+            offer: it.offer || "",
+          }))
+        );
+        setLoading(false);
+        return;
+      }
+
+      // ورود از پروفایل مشتری؟
+      const draft = useApp.getState().invoiceDraft;
+      if (draft && draft.customerId) {
+        const cust = c.find((x) => x.id === draft.customerId);
+        const pt = cust ? defaultTypeFor(cust.type) : "STORE";
+        setCustomerId(draft.customerId);
+        setLockedCustomer(true);
+        setFromProfile(true);
+        setPriceType(pt);
+        const built: DraftItem[] = [];
+        for (const [pid, sel] of Object.entries(draft.selections)) {
+          const product = g.flatMap((gr) => gr.products).find((p) => p.id === pid);
+          if (!product) continue;
+          built.push({
+            productId: product.id,
+            productName: product.name,
+            volume: product.volume || "",
+            price: priceOfProduct(product, pt),
+            discount: product.discount,
+            quantity: sel.quantity || 1,
+            offer: sel.offer || "",
+          });
+        }
+        setItems(built);
+        useApp.getState().setInvoiceDraft(null);
+      } else if (params.customerId) {
+        setCustomerId(params.customerId);
+        setFromProfile(true);
+        const cust = c.find((x) => x.id === params.customerId);
+        if (cust) setPriceType(defaultTypeFor(cust.type));
+      }
+      if (!cancelled) setLoading(false);
     };
     boot();
     return () => {
@@ -304,6 +382,60 @@ export function OrderForm() {
     const validItems = items.filter((it) => it.quantity > 0);
     if (validItems.length === 0) {
       toast({ title: "خطا", description: "حداقل یک کالا از بخش «انتخاب کالا» تیک بزنید", variant: "destructive" });
+      return;
+    }
+    // ── ثبت آفلاین (بخش ۵.۳ سند) ──
+    // فقط صدور جدید؛ ویرایش/مشتری جدید در آفلاین ممنوع است (قفل فرم‌ها)
+    if (!online && !editId) {
+      const clientRef = newClientRef();
+      const rows = validItems.map((it, idx) => {
+        const lineTotal = Math.max(0, Math.round(it.quantity * it.price * (1 - it.discount / 100)));
+        return {
+          productId: it.productId.startsWith("manual-") ? null : it.productId,
+          productName: it.productName,
+          quantity: it.quantity,
+          volume: it.volume || null,
+          price: it.price,
+          discount: it.discount,
+          offer: it.offer || null,
+          lineTotal,
+          rowNumber: idx + 1,
+        };
+      });
+      const item: OrderOutboxItem = {
+        clientRef,
+        deviceId: getDeviceId(),
+        customerId,
+        customerName: customers.find((c) => c.id === customerId)?.name || "—",
+        title: title || null,
+        priceType,
+        note: note || null,
+        settlementType: settlement.settlementType || null,
+        dueDays: settlement.dueDays ? Number(settlement.dueDays) : null,
+        totalAmount: rows.reduce((s, r) => s + r.lineTotal, 0),
+        items: rows,
+        createdAt: new Date().toISOString(),
+        syncedAt: null,
+      };
+      setSaving(true);
+      try {
+        await orderOutboxAdd(item);
+        const cnt = (await orderOutboxList()).length;
+        setPendingOrders(cnt);
+        toast({
+          title: "فاکتور در حالت آفلاین ثبت شد ✅",
+          description: "پس از بازگشت اتصال، خودکار برای سرور ارسال می‌شود — خروجی PDF آماده است",
+        });
+        setView("order-detail", {
+          orderId: clientRef,
+          offline: "1",
+          ...(fromProfile && customerId ? { customerId } : {}),
+        });
+      } catch {
+        toast({ title: "خطا", description: "ذخیره محلی فاکتور ناموفق بود — دوباره تلاش کنید", variant: "destructive" });
+      } finally {
+        setSaving(false);
+      }
       return;
     }
     setSaving(true);
@@ -383,6 +515,20 @@ export function OrderForm() {
           بازگشت
         </Button>
       </div>
+
+      {/* اطلاع حالت آفلاین — بخش ۵.۳ سند: سفارش‌گیری آفلاین مجاز است */}
+      {!online && !editId && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-start gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0 mt-0.5" />
+          <span className="leading-5">
+            <b>ثبت فاکتور در حالت آفلاین</b> — قیمت‌ها از آخرین همگام‌سازی دستگاه منجمد می‌شوند؛ فاکتور در صف محلی
+            می‌ماند و پس از بازگشت اتصال خودکار برای سرور ارسال می‌شود.
+          </span>
+        </div>
+      )}
 
       {/* انتخاب مشتری */}
       <Card>
@@ -644,7 +790,7 @@ export function OrderForm() {
       <InvoiceSettlementFields value={settlement} onChange={(patch) => setSettlement((s) => ({ ...s, ...patch }))} />
 
       <Button className="w-full" size="lg" onClick={save} disabled={saving}>
-        {saving && <Loader2 className="h-4 w-4 animate-spin" />} {editId ? "ذخیره تغییرات" : "ثبت فاکتور فروش"}
+        {saving && <Loader2 className="h-4 w-4 animate-spin" />} {editId ? "ذخیره تغییرات" : !online ? "ثبت آفلاین فاکتور" : "ثبت فاکتور فروش"}
       </Button>
     </div>
   );

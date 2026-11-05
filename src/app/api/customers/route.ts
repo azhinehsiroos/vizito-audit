@@ -11,9 +11,11 @@ export async function GET(req: NextRequest) {
   // ممیزی v1.0.9 — فیلتر آرشیو: پیش‌فرض فقط مشتری‌های فعال؛ ?archived=1 فقط آرشیوشده‌ها
   // (سوابق مشتری آرشیوشده در سفارش‌ها/پرداخت‌ها/گزارش‌ها دست‌نخورده می‌ماند)
   const showArchived = sp.get("archived") === "1";
-  // محدودسازی دسترسی: مدیر و دارای مجوز all_customers ← همه مشتری‌ها؛ بقیه فقط مشتری‌های خودشان
+  // محدودسازی دسترسی: مدیر و دارای مجوز all_customers ← همه مشتری‌های مجموعه؛ بقیه فقط مشتری‌های خودشان
+  // چندمجموعه‌ای: هیچ‌کس (حتی مدیر) از محدوده مجموعه خودش بیرون نمی‌رود
   const allAccess = canSeeAllCustomers(auth.ctx);
-  const scopeWhere = { ...(allAccess ? {} : { createdBy: auth.ctx.user.id }), archived: showArchived };
+  const orgScope = auth.ctx.org ? { orgId: auth.ctx.org.id } : {};
+  const scopeWhere = { ...orgScope, ...(allAccess ? {} : { createdBy: auth.ctx.user.id }), archived: showArchived };
   const customers = await db.customer.findMany({
     where: {
       ...scopeWhere,
@@ -51,6 +53,7 @@ export async function POST(req: NextRequest) {
 
     const customer = await db.customer.create({
       data: {
+        orgId: auth.ctx.org ? auth.ctx.org.id : null,
         name,
         company: strOrNull(body.company, 100),
         phone,

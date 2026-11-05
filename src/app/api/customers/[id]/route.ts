@@ -13,6 +13,8 @@ type Params = { params: Promise<{ id: string }> };
 async function findInScope(id: string, ctx: AuthContext) {
   const customer = await db.customer.findUnique({ where: { id } });
   if (!customer) return null;
+  // چندمجموعه‌ای: رکورد مجموعه دیگر ← ۴۰۴ (بدون افشای وجود) — حتی برای مدیر
+  if (ctx.org && customer.orgId !== ctx.org.id) return null;
   if (!canSeeAllCustomers(ctx) && customer.createdBy !== ctx.user.id) return null;
   return customer;
 }

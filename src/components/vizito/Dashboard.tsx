@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { JalaliCalendar } from "@/components/vizito/JalaliCalendar";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
+import { readSnapshot, mirror } from "@/lib/offline";
 import { formatMoney, formatJalaliLong, expiryLabel, toFa } from "@/lib/jalali";
-import { Users, Package, ClipboardList, Wallet, Plus, UserPlus, PackagePlus, BookOpen } from "lucide-react";
+import { Users, Package, ClipboardList, Wallet, Plus, UserPlus, PackagePlus, BookOpen, CloudOff } from "lucide-react";
 
 type Summary = {
   customerCount: number;
@@ -23,13 +24,21 @@ type Summary = {
 };
 
 export function Dashboard() {
-  const { setView, me } = useApp();
+  const { setView, me, online } = useApp();
   const [summary, setSummary] = useState<Summary | null>(null);
 
   useEffect(() => {
     api<Summary>("/api/reports/summary")
-      .then(setSummary)
-      .catch(() => setSummary(null));
+      .then((s) => {
+        setSummary(s);
+        // آینه‌سازی — داشبورد آفلاین با آخرین خلاصه شناخته‌شده
+        void mirror("summary", s);
+      })
+      .catch(async () => {
+        // قطعی — اسنپ‌شات آخرین همگام‌سازی
+        const snap = await readSnapshot<Summary>("summary");
+        setSummary(snap ? snap.value : null);
+      });
   }, []);
 
   const stats = [
@@ -47,6 +56,16 @@ export function Dashboard() {
 
   return (
     <div className="space-y-4 app-fade">
+      {/* اطلاع آفلاین — بخش ۵.۲ سند: داشبورد از آخرین همگام‌سازی */}
+      {!online && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>حالت آفلاین — آمار از آخرین همگام‌سازی دستگاه؛ سفارش‌های جدید پس از اتصال در آمار دیده می‌شوند.</span>
+        </div>
+      )}
       {/* خوش‌آمد */}
       <Card className="border-primary/20 bg-gradient-to-l from-primary/10 via-card to-card">
         <CardContent className="p-4">

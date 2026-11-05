@@ -36,7 +36,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     where: { id },
     include: { customer: true, items: true, createdByUser: { select: { name: true, company: true } } },
   });
-  if (!order || !orderInScope(order, auth.ctx)) {
+  // چندمجموعه‌ای: سفارش مجموعه دیگر ← ۴۰۴ بدون افشا — حتی برای مدیر
+  if (!order || (auth.ctx.org && order.orgId !== auth.ctx.org.id) || !orderInScope(order, auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
   // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price دیده نمی‌شود (۴۰۴ بدون افشا)
@@ -51,7 +52,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   if ("error" in auth) return auth.error;
   const { id } = await params;
   const order = await db.order.findUnique({ where: { id }, include: { customer: true } });
-  if (!order || !orderInScope(order, auth.ctx)) {
+  if (!order || (auth.ctx.org && order.orgId !== auth.ctx.org.id) || !orderInScope(order, auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
   // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price قابل مشاهده/تغییر نیست
@@ -82,7 +83,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
   if ("error" in auth) return auth.error;
   const { id } = await params;
   const existing = await db.order.findUnique({ where: { id }, include: { customer: true } });
-  if (!existing || !orderInScope(existing, auth.ctx)) {
+  if (!existing || (auth.ctx.org && existing.orgId !== auth.ctx.org.id) || !orderInScope(existing, auth.ctx)) {
     return Response.json({ error: "سفارش یافت نشد" }, { status: 404 });
   }
   // ممیزی v1.1.2 — فاکتور خرید برای کاربر بدون مجوز purchase_price قابل ویرایش نیست
@@ -141,7 +142,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     >();
     if (ids.length > 0) {
       const found = await db.product.findMany({
-        where: { id: { in: [...new Set(ids)] } },
+        where: { id: { in: [...new Set(ids)] }, ...(auth.ctx.org ? { orgId: auth.ctx.org.id } : {}) },
         select: { id: true, name: true, volume: true, priceStore: true, pricePharmacy: true, priceSalon: true, pricePurchase: true },
       });
       for (const p of found) productMap.set(p.id, p);

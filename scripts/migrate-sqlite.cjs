@@ -76,6 +76,13 @@ const REQUIRED_TABLES = [
   "LicenseSale",
   "LicenseCharge",
   "Backup",
+  "Org",
+  "License",
+  "LicenseEvent",
+  "SupportThread",
+  "SupportMessage",
+  "Device",
+  "AdminAccessLog",
 ];
 
 function log(msg) {

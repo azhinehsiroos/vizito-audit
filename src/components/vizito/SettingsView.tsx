@@ -21,6 +21,7 @@ import { Logo } from "@/components/vizito/Logo";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
 import { fileToCompressedDataUrl } from "@/lib/image";
+import { logoutAndClearLocal } from "@/components/vizito/VizitoApp";
 import { expiryLabel, toFa, formatJalali } from "@/lib/jalali";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "@/hooks/use-toast";
@@ -49,7 +50,7 @@ import {
 
 export function SettingsView() {
   const { theme, setTheme } = useTheme();
-  const { me, setMe, setView, logo, setLogo } = useApp();
+  const { me, setMe, setView, logo, setLogo, online } = useApp();
   const [mounted, setMounted] = useState(false);
   const [savingLogo, setSavingLogo] = useState(false);
   const logoFileRef = useRef<HTMLInputElement>(null);
@@ -83,8 +84,22 @@ export function SettingsView() {
     setEditingProfile(true);
   };
 
+  // قفل آفلاین (بخش ۵.۲ سند): ثبت/ویرایش تنظیمات ممنوع — سرور هم مستقل رد می‌کند
+  const requireOnline = (): boolean => {
+    if (!online) {
+      toast({
+        title: "حالت آفلاین",
+        description: "در حالت آفلاین تغییر تنظیمات و پروفایل ممکن نیست",
+        variant: "destructive",
+      });
+      return false;
+    }
+    return true;
+  };
+
   const saveProfile = async () => {
     if (!me) return;
+    if (!requireOnline()) return;
     if (!profileForm.name.trim()) {
       toast({ title: "خطا", description: "نام را وارد کنید", variant: "destructive" });
       return;
@@ -108,6 +123,7 @@ export function SettingsView() {
   };
 
   const savePassword = async () => {
+    if (!requireOnline()) return;
     if (!pwForm.current || !pwForm.next) {
       toast({ title: "خطا", description: "رمز فعلی و رمز جدید را وارد کنید", variant: "destructive" });
       return;
@@ -136,6 +152,7 @@ export function SettingsView() {
   };
 
   const regenerateInvite = async () => {
+    if (!requireOnline()) return;
     setRegenerating(true);
     try {
       const r = await api<{ inviteCode: string }>("/api/settings/invite", { method: "POST" });
@@ -159,14 +176,17 @@ export function SettingsView() {
   };
 
   const logout = () => {
-    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت — بدون توکن در JS
+    // ابطال سمت سرور نشست + پاک‌سازی داده محلی مجموعه (حریم خصوصی بخش ۱۰ سند)
     api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    setMe(null);
-    setView("dashboard");
+    void logoutAndClearLocal().finally(() => {
+      setMe(null);
+      setView("dashboard");
+    });
   };
 
   const uploadLogo = async (file: File | undefined) => {
     if (!file) return;
+    if (!requireOnline()) return;
     setSavingLogo(true);
     try {
       const dataUrl = await fileToCompressedDataUrl(file, 512);
@@ -184,6 +204,7 @@ export function SettingsView() {
   };
 
   const resetLogo = async () => {
+    if (!requireOnline()) return;
     setSavingLogo(true);
     try {
       await api("/api/settings", { method: "PUT", body: { logo: null } });
@@ -493,6 +514,11 @@ export function SettingsView() {
             اپلیکیشن ویزیت محصولات آرایشی و بهداشتی — مدیریت مشتریان، کالاها، سفارشات، کاتالوگ و گزارشات با
             خروجی PDF و ذخیره خودکار در پوشه «ویزیتو» داخل Downloads گوشی. تقویم هجری شمسی، دارک مود، دسترسی زمان‌دار
             کاربران و کنترل دسترسی قیمت خرید.
+          </p>
+          <p className="text-[11px] text-muted-foreground leading-6">
+            شفافیت حریم خصوصی: سازنده برنامه امکان مشاهده اطلاعات مجموعه شما را «فقط برای پشتیبانی» دارد؛
+            این دسترسی فقط-خواندنی است، هر بار در لاگ حسابرسی ثبت می‌شود و رمز عبور هیچ کاربری هرگز نمایش
+            داده نمی‌شود.
           </p>
           <div className="text-[10px] text-muted-foreground">VIZITO © نسخه ۲.۰</div>
         </CardContent>

@@ -13,6 +13,8 @@
  *   ۵) دیتابیس ناقص (جدول ناقص) ⇒ توقف کامل بدون تغییر
  *   ۶) دیتابیس ناسازگار (جدول اضافه غریبه) ⇒ توقف کامل بدون تغییر
  *   ۷) رکورد مهاجرت بدون ساختار متناظر ⇒ توقف (ناسازگاری جدول مهاجرت و ساختار)
+ *   ۸) دیتابیس دارای داده + رکورد کامل ⇒ بدون تغییر (حفظ داده)
+ *   ۹) بک‌فیل چندمجموعه‌ای (SaaS) روی داده قدیمی ⇒ مجموعه + نقش‌ها + لایسنس + پوشش orgId — بدون حذف
  *
  * اجرا:  node scripts/migrate-e2e.cjs
  * ---------------------------------------------------------------------------
@@ -308,6 +310,104 @@ console.log("\n── ۸) دیتابیس دارای داده + رکورد کام
   const okData = counts(dbo) === before && structure(dbo) === beforeStruct;
   if (okData) ok("داده‌ها (" + before + ") و ساختار پس از اجرای مجدد کامل حفظ شد");
   else bad("از دست رفتن داده در اجرای مجدد!");
+  dbo.close();
+}
+
+/* ── سناریو ۹: بک‌فیل چندمجموعه‌ای (SaaS) روی نصب قدیمی ── */
+console.log("\n── ۹) بک‌فیل چندمجموعه‌ای: مجموعه + نقش‌ها + لایسنس + پوشش orgId ──");
+{
+  const { execFileSync } = require("child_process");
+  const f = path.join(TMP, "s9.db");
+  runMigrations({ dbFile: f, migrationsDir: MIGRATIONS_DIR });
+  let dbo = freshDb(f);
+  // داده «قدیمی» تک‌شرکتی: یک ADMIN مالک + یک ADMIN معمولی + یک USER + داده تجاری بدون orgId
+  const OWNER_M = "09129999001";
+  dbo.exec(`
+    INSERT INTO "User" ("id","mobile","name","password","role","kind","createdAt","updatedAt")
+      VALUES ('u-owner','${OWNER_M}','مالک','x:s','ADMIN','STAFF',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "User" ("id","mobile","name","password","role","kind","createdAt","updatedAt")
+      VALUES ('u-admin','09129999002','مدیر خریدار','x:s','ADMIN','STAFF',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "User" ("id","mobile","name","password","role","kind","createdAt","updatedAt")
+      VALUES ('u-staff','09129999003','پرسنل','x:s','USER','STAFF',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "Customer" ("id","name","phone","type","createdAt","updatedAt")
+      VALUES ('c1','مشتری قدیمی','09120000002','STORE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "ProductGroup" ("id","name","createdAt","updatedAt")
+      VALUES ('g1','گروه قدیمی',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "Product" ("id","groupId","name","pricePurchase","priceStore","pricePharmacy","priceSalon","discount","minOrder","createdAt","updatedAt")
+      VALUES ('p1','g1','کالای قدیمی',0,1000,0,0,0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "Order" ("id","customerId","priceType","status","totalAmount","createdAt","updatedAt")
+      VALUES ('o1','c1','STORE','FINAL',1000,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+    INSERT INTO "OrderItem" ("id","orderId","productName","quantity","price","discount","lineTotal","rowNumber","createdAt")
+      VALUES ('oi1','o1','کالا',1,1000,0,1000,1,CURRENT_TIMESTAMP);
+    INSERT INTO "Payment" ("id","customerId","orderId","type","amount","discountPercent","discountAmount","createdAt")
+      VALUES ('p1','c1','o1','CASH',500,0,0,CURRENT_TIMESTAMP);
+  `);
+  const beforeCounts = counts(dbo);
+  dbo.close();
+
+  // اجرای بک‌فیل با env مالک — پروسه جدا مثل production
+  let bfOut = "";
+  try {
+    bfOut = execFileSync("node", [path.join(__dirname, "backfill-multi-tenant.cjs")], {
+      env: { ...process.env, DATABASE_URL: "file:" + f, OWNER_MOBILES: OWNER_M },
+      encoding: "utf8",
+    });
+  } catch (e) {
+    bad("اجرای بک‌فیل شکست خورد: " + String(e && e.message).slice(0, 120));
+  }
+  if (bfOut.includes("بک‌فیل کامل شد")) ok("بک‌فیل اجرا شد و صحت‌سنجی داخلی خودش را پاس کرد");
+  else if (!bfOut) bad("خروجی بک‌فیل خالی است");
+
+  dbo = freshDb(f);
+  const orgCount = dbo.prepare('SELECT COUNT(*) n FROM "Org"').get().n;
+  if (orgCount === 1) ok("دقیقاً یک مجموعه پیش‌فرض ساخته شد");
+  else bad("تعداد مجموعه‌ها نادرست: " + orgCount);
+
+  const roles = dbo.prepare('SELECT mobile, role, orgId FROM "User" ORDER BY mobile').all();
+  const ownerRow = roles.find((r) => r.mobile === OWNER_M);
+  const adminRow = roles.find((r) => r.mobile === "09129999002");
+  const staffRow = roles.find((r) => r.mobile === "09129999003");
+  if (ownerRow && ownerRow.role === "SUPER_ADMIN" && ownerRow.orgId === null)
+    ok("مالک → SUPER_ADMIN خارج از مجموعه");
+  else bad("نگاشت مالک نادرست: " + JSON.stringify(ownerRow));
+  if (adminRow && adminRow.role === "ORG_ADMIN" && adminRow.orgId)
+    ok("ADMIN → ORG_ADMIN عضو مجموعه");
+  else bad("نگاشت مدیر نادرست: " + JSON.stringify(adminRow));
+  if (staffRow && staffRow.role === "VISITOR" && staffRow.orgId)
+    ok("USER → VISITOR عضو مجموعه");
+  else bad("نگاشت پرسنل نادرست: " + JSON.stringify(staffRow));
+
+  const lic = dbo.prepare('SELECT plan, status, expiresAt FROM "License"').get();
+  if (lic && lic.plan === "PERM" && lic.expiresAt === null && lic.status === "ACTIVE")
+    ok("لایسنس مجموعه پیش‌فرض = دائمی (حساب سازنده موجود بود)");
+  else bad("لایسنس مهاجرت نادرست: " + JSON.stringify(lic));
+
+  const nullOrg = (t) => dbo.prepare(`SELECT COUNT(*) n FROM "${t}" WHERE "orgId" IS NULL`).get().n;
+  const nc = nullOrg("Customer"), np = nullOrg("Product"), no = nullOrg("Order"), npay = nullOrg("Payment"), ng = nullOrg("ProductGroup");
+  if (nc + np + no + npay + ng === 0) ok("پوشش orgId کامل در جداول تجاری (صفر ردیف تهی)");
+  else bad("ردیف‌های بدون مجموعه: Customer=" + nc + " Product=" + np + " Order=" + no + " Payment=" + npay + " Group=" + ng);
+
+  const afterCounts = counts(dbo);
+  if (beforeCounts === afterCounts) ok("شمارش رکوردها دقیقاً حفظ شد (" + afterCounts + ")");
+  else bad("شمارش رکوردها تغییر کرد! قبل=" + beforeCounts + " بعد=" + afterCounts);
+  dbo.close();
+
+  // اجرای مجدد بک‌فیل — idempotent
+  let bf2 = "";
+  try {
+    bf2 = execFileSync("node", [path.join(__dirname, "backfill-multi-tenant.cjs")], {
+      env: { ...process.env, DATABASE_URL: "file:" + f, OWNER_MOBILES: OWNER_M },
+      encoding: "utf8",
+    });
+  } catch (e) {
+    bad("اجرای مجدد بک‌فیل خطا داد: " + String(e && e.message).slice(0, 120));
+  }
+  dbo = freshDb(f);
+  const orgCount2 = dbo.prepare('SELECT COUNT(*) n FROM "Org"').get().n;
+  const licCount2 = dbo.prepare('SELECT COUNT(*) n FROM "License"').get().n;
+  if (bf2.includes("از قبل مهاجرت انجام شده") && orgCount2 === 1 && licCount2 === 1)
+    ok("اجرای مجدد بک‌فیل idempotent است (مجموعه/لایسنس تکراری نساخت)");
+  else bad("اجرای مجدد بک‌فیل idempotent نیست: orgs=" + orgCount2 + " lic=" + licCount2);
   dbo.close();
 }
 

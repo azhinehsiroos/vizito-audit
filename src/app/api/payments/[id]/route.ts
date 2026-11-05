@@ -17,6 +17,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     include: { customer: true, order: { select: { priceType: true } } },
   });
   if (!payment) return Response.json({ error: "تسویه یافت نشد" }, { status: 404 });
+  // چندمجموعه‌ای: تسویه مجموعه دیگر ← ۴۰۴ بدون افشا — حتی برای مدیر
+  if (auth.ctx.org && payment.orgId !== auth.ctx.org.id) {
+    return Response.json({ error: "تسویه یافت نشد" }, { status: 404 });
+  }
   if (!canSeeAllCustomers(auth.ctx) && payment.customer.createdBy !== auth.ctx.user.id) {
     return Response.json({ error: "تسویه یافت نشد" }, { status: 404 });
   }

@@ -56,12 +56,19 @@ export async function PUT(req: NextRequest) {
     if (target !== "ALL" && !target) {
       return Response.json({ error: "گیرنده را انتخاب کنید (یک کاربر یا همه)" }, { status: 400 });
     }
-    const recipients =
-      target === "ALL"
-        ? await db.user.findMany({ where: { id: { not: auth.ctx.user.id } }, select: { id: true } })
-        : (await db.user.findUnique({ where: { id: target }, select: { id: true } }))
-          ? [{ id: target }]
-          : [];
+    let recipients: { id: string }[] = [];
+    if (target === "ALL") {
+      // چندمجموعه‌ای: «همه» فقط کاربران همان مجموعه است (سازنده/پنجره قبل از بک‌فیل = همه کاربران)
+      recipients = await db.user.findMany({
+        where: { id: { not: auth.ctx.user.id }, ...(auth.ctx.org ? { orgId: auth.ctx.org.id } : {}) },
+        select: { id: true },
+      });
+    } else {
+      const t = await db.user.findUnique({ where: { id: target }, select: { id: true, orgId: true } });
+      if (t && (auth.ctx.org ? t.orgId === auth.ctx.org.id : true)) {
+        recipients = [{ id: t.id }];
+      }
+    }
     if (recipients.length === 0) {
       return Response.json({ error: "گیرنده‌ای یافت نشد" }, { status: 404 });
     }

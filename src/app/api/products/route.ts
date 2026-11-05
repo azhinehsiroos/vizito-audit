@@ -9,8 +9,9 @@ export async function GET(req: NextRequest) {
   if ("error" in auth) return auth.error;
   const allowed = canSeePurchasePrice(auth.ctx);
   const groupId = req.nextUrl.searchParams.get("groupId");
+  // چندمجموعه‌ای: کاتالوگ فقط داخل مجموعه خود کاربر
   const products = await db.product.findMany({
-    where: groupId ? { groupId } : undefined,
+    where: { ...(auth.ctx.org ? { orgId: auth.ctx.org.id } : {}), ...(groupId ? { groupId } : {}) },
     include: { group: true },
     orderBy: { createdAt: "desc" },
   });
@@ -31,6 +32,10 @@ export async function POST(req: NextRequest) {
     if (!groupId) return Response.json({ error: "انتخاب گروه الزامی است" }, { status: 400 });
     const group = await db.productGroup.findUnique({ where: { id: groupId } });
     if (!group) return Response.json({ error: "گروه یافت نشد" }, { status: 404 });
+    // چندمجموعه‌ای: گروه باید متعلق به مجموعه خود کاربر باشد
+    if (auth.ctx.org && group.orgId !== auth.ctx.org.id) {
+      return Response.json({ error: "گروه یافت نشد" }, { status: 404 });
+    }
     const image = typeof body.image === "string" ? body.image : null;
     if (image && (!isSafeImageDataUrl(image) || image.length > 2_500_000)) {
       return Response.json({ error: "تصویر نامعتبر است (فرمت PNG/JPEG/WEBP و حداکثر ۲.۵ مگابایت)" }, { status: 400 });
@@ -38,6 +43,7 @@ export async function POST(req: NextRequest) {
 
     const product = await db.product.create({
       data: {
+        orgId: auth.ctx.org ? auth.ctx.org.id : null,
         groupId,
         name,
         image: image || null,
@@ -55,6 +61,7 @@ export async function POST(req: NextRequest) {
     });
     await notifyCatalogChange(
       auth.ctx.user.id,
+      auth.ctx.org ? auth.ctx.org.id : null,
       "کالای جدید به کاتالوگ اضافه شد",
       `کالای «${name}» توسط مدیر ثبت شد — لیست کالاها و قیمت‌ها به‌روز است`
     );

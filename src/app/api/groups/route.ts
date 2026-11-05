@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "products");
   if ("error" in auth) return auth.error;
   const allowed = canSeePurchasePrice(auth.ctx);
+  // چندمجموعه‌ای: گروه‌ها و کالاهای مجموعه خود کاربر
   const groups = await db.productGroup.findMany({
+    where: auth.ctx.org ? { orgId: auth.ctx.org.id } : {},
     include: { products: { orderBy: { createdAt: "desc" } } },
     orderBy: { createdAt: "desc" },
   });
@@ -32,8 +34,13 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const name = strField(body.name, 80);
     if (!name) return Response.json({ error: "نام گروه الزامی است" }, { status: 400 });
-    const group = await db.productGroup.create({ data: { name } });
-    await notifyCatalogChange(auth.ctx.user.id, "گروه کالای جدید", `گروه «${name}» توسط مدیر اضافه شد — لیست کالاها به‌روز است`);
+    const group = await db.productGroup.create({
+      data: { orgId: auth.ctx.org ? auth.ctx.org.id : null, name },
+    });
+    await notifyCatalogChange(
+      auth.ctx.user.id,
+      auth.ctx.org ? auth.ctx.org.id : null,
+      "گروه کالای جدید", `گروه «${name}» توسط مدیر اضافه شد — لیست کالاها به‌روز است`);
     return Response.json(group, { status: 201 });
   } catch (e) {
     console.error("create group error", e);

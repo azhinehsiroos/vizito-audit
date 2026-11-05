@@ -126,6 +126,13 @@ export async function runDataRetentionSweep(
   if (sweepInFlight) return { ran: false, phase: "SWEEP_DUE", reason: "in-flight" };
   sweepInFlight = true;
   try {
+    // تصمیم D2 (SaaS v2.0): حذف خودکار داده به‌دلیل انقضای لایسنس به‌طور پیش‌فرض «غیرفعال» است —
+    // سند تجاری جدید: اطلاعات مجموعه هرگز با انقضای لایسنس حذف نمی‌شود و سفارش‌گیری آفلاین
+    // ادامه دارد. این چرخه قدیمی فقط با env: VIZITO_RETENTION_SWEEP=on (روی سرور سازنده)
+    // دوباره فعال می‌شود؛ کد دست‌نخورده حفظ شده است.
+    if ((process.env.VIZITO_RETENTION_SWEEP || "").trim().toLowerCase() !== "on") {
+      return { ran: false, phase: "SWEEP_DUE", reason: "retention-sweep-disabled-by-default" };
+    }
     const st = await lifecycleState();
     if (st.phase !== "SWEEP_DUE") return { ran: false, phase: st.phase, reason: "phase-not-due" };
     if (st.paused) return { ran: false, phase: "SWEEP_DUE", reason: "paused-by-owner" };

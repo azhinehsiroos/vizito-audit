@@ -31,6 +31,8 @@ import { api } from "@/lib/api";
 import { formatJalaliDateTime, formatMoney, toEnDigits, toFa } from "@/lib/jalali";
 import { visiblePriceTypes, priceOfProduct, priceTypeLabel, CUSTOMER_TYPES } from "@/lib/sections";
 import type { Customer, Order, ProductGroup } from "@/lib/types";
+import { orderOutboxAdd, orderOutboxList } from "@/lib/idb";
+import { getDeviceId, newClientRef, readSnapshot, mirror } from "@/lib/offline";
 import { toast } from "@/hooks/use-toast";
 import {
   User,
@@ -53,7 +55,7 @@ import {
 type Selected = { productId: string; quantity: number; offer: string };
 
 export function CustomerProfile() {
-  const { params, setView, can, setInvoiceDraft } = useApp();
+  const { params, setView, can, setInvoiceDraft, online, setPendingOrders } = useApp();
   const canPurchase = can("purchase_price");
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [groups, setGroups] = useState<ProductGroup[]>([]);
@@ -74,8 +76,26 @@ export function CustomerProfile() {
       setCustomer(c);
       setGroups(g);
       setPriceType(defaultTypeFor(c.type));
-    } catch (e) {
-      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+      void mirror("groups", g);
+    } catch {
+      // قطعی — اسنپ‌شات (مشتری از فهرست آخرین همگام‌سازی)
+      const [cs, gs] = await Promise.all([
+        readSnapshot<Customer[]>("customers"),
+        readSnapshot<ProductGroup[]>("groups"),
+      ]);
+      const c = cs?.value.find((x) => x.id === params.customerId) || null;
+      if (c) {
+        setCustomer(c);
+        setPriceType(defaultTypeFor(c.type));
+      }
+      if (gs) setGroups(gs.value);
+      if (!c) {
+        toast({
+          title: "حالت آفلاین",
+          description: "این مشتری در اسنپ‌شات دستگاه نیست — پس از اتصال دوباره تلاش کنید",
+          variant: "destructive",
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -132,6 +152,58 @@ export function CustomerProfile() {
   const submitOrder = async () => {
     if (selectedList.length === 0) {
       toast({ title: "خطا", description: "ابتدا کالا انتخاب کنید", variant: "destructive" });
+      return;
+    }
+    // ── ثبت آفلاین از پروفایل (بخش ۵.۳ سند) — همان مسیر OrderForm ──
+    if (!online) {
+      const clientRef = newClientRef();
+      const rows = selectedList.map((s, idx) => {
+        const p = findProduct(s.productId)!;
+        const lt = Math.max(0, Math.round(s.quantity * priceOfProduct(p, priceType) * (1 - p.discount / 100)));
+        return {
+          productId: s.productId,
+          productName: p.name,
+          quantity: s.quantity,
+          volume: p.volume || null,
+          price: priceOfProduct(p, priceType),
+          discount: p.discount,
+          offer: s.offer || null,
+          lineTotal: lt,
+          rowNumber: idx + 1,
+        };
+      });
+      setSaving(true);
+      try {
+        await orderOutboxAdd({
+          clientRef,
+          deviceId: getDeviceId(),
+          customerId: customer!.id,
+          customerName: customer!.name,
+          title: `سفارش پروفایل ${customer!.name}`,
+          priceType,
+          note: null,
+          settlementType: settlement.settlementType || null,
+          dueDays: (() => {
+            const n = Number(toEnDigits(settlement.dueDays).replace(/\D/g, ""));
+            return n > 0 ? Math.min(3650, Math.round(n)) : null;
+          })(),
+          totalAmount: rows.reduce((s2, r) => s2 + r.lineTotal, 0),
+          items: rows,
+          createdAt: new Date().toISOString(),
+          syncedAt: null,
+        });
+        setPendingOrders((await orderOutboxList()).length);
+        toast({
+          title: "سفارش در حالت آفلاین ثبت شد ✅",
+          description: "پس از بازگشت اتصال خودکار برای سرور ارسال می‌شود",
+        });
+        setSelected({});
+        setSettlement({ settlementType: "", dueDays: "" });
+      } catch {
+        toast({ title: "خطا", description: "ذخیره محلی سفارش ناموفق بود", variant: "destructive" });
+      } finally {
+        setSaving(false);
+      }
       return;
     }
     setSaving(true);

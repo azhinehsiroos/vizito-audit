@@ -3,6 +3,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
+import {
+  getDeviceId,
+  isOnline,
+  onConnectionChange,
+  readMeSnapshot,
+  readSnapshot,
+  mirror,
+  mirrorMe,
+  offlineBypassAllowed,
+  readCachedLicensePhase,
+  type OfflineMe,
+} from "@/lib/offline";
+import { orderOutboxList, clearAllLocalData } from "@/lib/idb";
+import { runSync, cancelSyncSchedule } from "@/lib/sync";
 import { Shell } from "@/components/vizito/Shell";
 import { AuthScreen } from "@/components/vizito/AuthScreen";
 import { Dashboard } from "@/components/vizito/Dashboard";
@@ -19,22 +33,58 @@ import { OwnerMessagesView } from "@/components/vizito/OwnerMessagesView";
 import { SettingsView } from "@/components/vizito/SettingsView";
 import { BackupView } from "@/components/vizito/BackupView";
 import { LicenseSalesView } from "@/components/vizito/LicenseSalesView";
+import { SuperAdminView } from "@/components/vizito/SuperAdminView";
+import { SupportView } from "@/components/vizito/SupportView";
 import { LicenseScreen, type LicenseState } from "@/components/vizito/LicenseScreen";
 import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { ShieldOff } from "lucide-react";
 
 export function VizitoApp() {
-  const { view, me, authLoading, setMe, setAuthLoading, setLogo } = useApp();
+  const {
+    view,
+    me,
+    authLoading,
+    online,
+    offlineBooted,
+    setOnline,
+    setOfflineBooted,
+    setMe,
+    setAuthLoading,
+    setLogo,
+    setPendingOrders,
+  } = useApp();
   const [license, setLicense] = useState<LicenseState | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(true);
+
+  const refreshPendingOrders = useCallback(async () => {
+    try {
+      const items = await orderOutboxList();
+      setPendingOrders(items.length);
+    } catch {
+      // بدون IndexedDB — صف آفلاین نیست
+    }
+  }, [setPendingOrders]);
+
+  // یک دور همگام‌سازی کامل — نتیجه: شمارنده صف تازه می‌شود
+  const syncNow = useCallback(async () => {
+    if (!useApp.getState().me?.orgName) return; // همگام‌سازی مجموعه‌محور است
+    await runSync(({ ordersRemaining }) => setPendingOrders(ordersRemaining));
+    void refreshPendingOrders();
+  }, [setPendingOrders, refreshPendingOrders]);
 
   const loadLicense = useCallback(async () => {
     try {
       const res = await fetch("/api/license/status", { cache: "no-store" });
-      setLicense((await res.json()) as LicenseState);
+      const state = (await res.json()) as LicenseState;
+      setLicense(state);
+      // آینه‌سازی برای ورود آفلاین (بخش ۵.۴ — تصمیم فقط بر اساس آخرین وضعیت سمت سرور)
+      void mirror("license", state);
     } catch {
-      setLicense({ activated: false, valid: false, name: null, mobile: null, expiresAt: null, daysLeft: null });
+      // قطعی اینترنت — آخرین وضعیت شناخته‌شده از اسنپ‌شات
+      const snap = await readSnapshot<LicenseState>("license");
+      if (snap) setLicense(snap.value);
+      else setLicense({ activated: false, valid: false, name: null, mobile: null, expiresAt: null, daysLeft: null });
     } finally {
       setLicenseLoading(false);
     }
@@ -51,52 +101,111 @@ export function VizitoApp() {
     if (meId) void loadLicense();
   }, [meId, loadLicense]);
 
+  // ── اتصال/قطعی — وضعیت سراسری + واکنش بازگشت اتصال ──
+  useEffect(() => {
+    setOnline(isOnline());
+    void refreshPendingOrders();
+    return onConnectionChange((up) => {
+      setOnline(up);
+      if (up) {
+        void refreshPendingOrders();
+        // بازگشت اتصال — لایسنس/نشست دوباره از سرور (منبع حقیقت)
+        void loadLicense();
+        // اگر اپ از اسنپ‌شات آفلاین بوت شده بود — رفرش کامل تا داده آنلاین برگردد
+        if (useApp.getState().offlineBooted) {
+          window.location.reload();
+        } else {
+          // تخلیه صف‌های محلی (سفارش/پشتیبانی) + باندل تازه — بخش ۶.۱ سند
+          void syncNow();
+        }
+      }
+    });
+  }, [setOnline, loadLicense, refreshPendingOrders, syncNow]);
+
   useEffect(() => {
     // بوت اصلی — همیشه اجرا می‌شود تا حتی در قفل لایسنس هم وضعیت کاربر مشخص شود:
     //  - کاربر بدون قفل (پرسنل در پایان ترِیال / مالک) وارد اپ می‌شود
     //  - کاربر قفل‌شده (مدیر در مهلت تمدید) صفحه وضعیت لایسنس را می‌بیند
+    //  - قطعی اینترنت با اسنپ‌شات: ورود آفلاین (بخش ۵ سند — نمایش + سفارش‌گیری)
     if (!license) return;
     const boot = async () => {
-      // تنظیمات برند (لوگو) — عمومی و بدون نیاز به ورود
-      try {
-        const s = await api<{ logo: string | null }>("/api/settings");
-        setLogo(s.logo);
-      } catch {
-        // لوگوی پیش‌فرض می‌ماند
+      const onlineNow = isOnline();
+      if (onlineNow) {
+        // تنظیمات برند (لوگو) — عمومی و بدون نیاز به ورود
+        try {
+          const s = await api<{ logo: string | null }>("/api/settings");
+          setLogo(s.logo);
+          void mirror("settings", s);
+        } catch {
+          // لوگوی پیش‌فرض می‌ماند
+        }
+        // احراز هویت با کوکی HttpOnly — همیشه سمت سرور چک می‌شود (۴۰۱ ⇒ صفحه ورود)
+        try {
+          const res = await api<{
+            user: { id: string; mobile: string; name: string; company: string | null; role: string; kind: string };
+            sections: string[];
+            grantExpiresAt: string | null;
+            isAdmin: boolean;
+            isOwner?: boolean;
+            orgName?: string | null;
+            licenseLocked?: boolean;
+            trialUntil?: string | null;
+          }>("/api/auth/me");
+          const meObj: OfflineMe & { id: string } = {
+            id: res.user.id,
+            mobile: res.user.mobile,
+            name: res.user.name,
+            company: res.user.company,
+            role: res.user.role,
+            sections: res.sections,
+            grantExpiresAt: res.grantExpiresAt,
+            isAdmin: res.isAdmin,
+            isOwner: !!res.isOwner,
+            kind: res.user.kind,
+            orgName: res.orgName ?? null,
+            licenseLocked: !!res.licenseLocked,
+            trialUntil: res.trialUntil ?? null,
+          };
+          setMe(meObj);
+          setOfflineBooted(false);
+          void mirrorMe(meObj);
+          // ثبت هویت دستگاه (زیرساخت همگام‌سازی — بخش ۵.۱) — بی‌صدا، مانع بوت نیست
+          if (meObj.orgName) {
+            api("/api/device", { method: "POST", body: {} }).catch(() => {});
+            // همگام‌سازی در بازشدن برنامه — بخش ۶.۱: باندل + تخلیه صف‌های محلی
+            void syncNow();
+          }
+        } catch {
+          // توکن نامعتبر است
+        } finally {
+          setAuthLoading(false);
+        }
+        return;
       }
-      // احراز هویت با کوکی HttpOnly — همیشه سمت سرور چک می‌شود (۴۰۱ ⇒ صفحه ورود)
-      try {
-        const res = await api<{
-          user: { id: string; mobile: string; name: string; company: string | null; role: string; kind: string };
-          sections: string[];
-          grantExpiresAt: string | null;
-          isAdmin: boolean;
-          isOwner?: boolean;
-          licenseLocked?: boolean;
-          trialUntil?: string | null;
-        }>("/api/auth/me");
-        setMe({
-          id: res.user.id,
-          mobile: res.user.mobile,
-          name: res.user.name,
-          company: res.user.company,
-          role: res.user.role,
-          sections: res.sections,
-          grantExpiresAt: res.grantExpiresAt,
-          isAdmin: res.isAdmin,
-          isOwner: !!res.isOwner,
-          kind: res.user.kind,
-          licenseLocked: !!res.licenseLocked,
-          trialUntil: res.trialUntil ?? null,
-        });
-      } catch {
-        // توکن نامعتبر است
-      } finally {
+      // ── بوت آفلاین ──
+      // لوگو از اسنپ‌شات
+      const settingsSnap = await readSnapshot<{ logo: string | null }>("settings");
+      if (settingsSnap) setLogo(settingsSnap.value.logo);
+      // نشست آخرین‌بار شناخته‌شده
+      const cachedMe = await readMeSnapshot();
+      if (!cachedMe) {
+        // بدون اسنپ‌شات — صفحه ورود (ورود آفلاین ممکن نیست)
         setAuthLoading(false);
+        return;
       }
+      // سیاست ۵.۴: انقضای لایسنس/ترِیال در آفلاین ⇒ «نمایش + سفارش‌گیری + PDF» حفظ می‌شود؛
+      // تعلیق مجموعه ⇒ فقط صفحه وضعیت (پشتیبانی هنگام اتصال)
+      const phase = await readCachedLicensePhase();
+      if (cachedMe.licenseLocked && !offlineBypassAllowed(phase)) {
+        setAuthLoading(false);
+        return;
+      }
+      setMe(cachedMe);
+      setOfflineBooted(true);
+      setAuthLoading(false);
     };
     boot();
-  }, [setMe, setAuthLoading, setLogo, license]);
+  }, [setMe, setAuthLoading, setLogo, setOfflineBooted, syncNow, license]);
 
   if (licenseLoading) {
     return (
@@ -115,8 +224,11 @@ export function VizitoApp() {
   //  - بازدیدکننده بدون حساب: همیشه صفحه ورود/ثبت‌نام — ثبت‌نام آزاد است و به وضعیت لایسنس نصب وابسته نیست
   //    (ممیزی v1.1.4)؛ پس از ورود، اگر حسابش قفل باشد صفحه لایسنس را می‌بیند
   //  - نصب تازه — صفحه ورود/ثبت‌نام (بک‌اند ثبت‌نام اولین مدیر را مجاز می‌داند)
+  //  - استثنای آفلاین (بخش ۵.۴ سند): در قطعی اینترنت با فاز «انقضا/پایان ترِیال» کاربر وارد اپ
+  //    می‌شود (نمایش + سفارش‌گیری + PDF) — تصمیم بر اساس آخرین فاز شناخته‌شده سمت سرور
   const userLocked = me ? !!me.licenseLocked : false;
-  if (license && !license.valid && !license.freshInstall && (authLoading || userLocked)) {
+  const offlineExpiredEntry = !online && offlineBooted && offlineBypassAllowed(license?.phase);
+  if (license && !license.valid && !license.freshInstall && (authLoading || userLocked) && !offlineExpiredEntry) {
     return <LicenseScreen state={license} onActivated={() => void loadLicense()} />;
   }
 
@@ -184,6 +296,9 @@ export function VizitoApp() {
       case "messages":
         // صندوق پیام — همه کاربران واردشده (سرور هم مستقل فیلتر می‌کند)
         return <MessagesView />;
+      case "support":
+        // پشتیبانی داخلی — کاربران مجموعه‌دار (سرور هم مستقل گیت می‌کند)
+        return <SupportView />;
       case "owner-messages":
         // پیام‌ها و اطلاع‌رسانی — فقط سازنده برنامه (سرور هم مستقل محافظت می‌کند)
         return me.isOwner ? <OwnerMessagesView /> : <Dashboard />;
@@ -193,6 +308,9 @@ export function VizitoApp() {
       case "license-sales":
         // فروش لایسنس — فقط سازنده برنامه (سرور هم مستقل محافظت می‌کند)
         return me.isOwner ? <LicenseSalesView /> : <Dashboard />;
+      case "super-admin":
+        // پنل مدیریت کل — فقط سازنده (SUPER_ADMIN)؛ سرور هم مستقل محافظت می‌کند
+        return me.isOwner || me.role === "SUPER_ADMIN" ? <SuperAdminView /> : <Dashboard />;
       case "settings":
         return <SettingsView />;
       default:
@@ -203,14 +321,27 @@ export function VizitoApp() {
   return <Shell>{renderView()}</Shell>;
 }
 
+export async function logoutAndClearLocal() {
+  // پاک‌سازی داده محلی مجموعه از دستگاه (حریم خصوصی بخش ۱۰ سند):
+  // صف پیام، صف سفارش‌های آفلاین و کل اسنپ‌شات — پیش از رفرش
+  cancelSyncSchedule();
+  try {
+    await clearAllLocalData();
+  } catch {
+    // پاک‌سازی ناموفق — خروج همچنان انجام می‌شود
+  }
+}
+
 function logoutAndReload() {
   // ابطال سمت سرور نشست — کوکی HttpOnly خودکار فرستاده و پاک می‌شود (توکن پشتیبان دیگر وجود ندارد)
   // امنیت: الزام Content-Type: application/json مطابق گیت ضد CSRF سرور
   const clear = () => location.reload();
   fetch("/api/auth/logout", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Vizito-Device": getDeviceId() },
   })
     .catch(() => {})
-    .finally(clear);
+    .finally(() => {
+      void logoutAndClearLocal().finally(clear);
+    });
 }

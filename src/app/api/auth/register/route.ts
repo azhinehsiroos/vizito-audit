@@ -15,7 +15,7 @@ import {
   dbRetryAfterSeconds,
   getClientIp,
 } from "@/lib/rate-limit";
-import { isLicenseValid, isOwnerMobile, startTrial } from "@/lib/license";
+import { isOwnerMobile } from "@/lib/license";
 import { normalizeMobile, MOBILE_RE, strField } from "@/lib/validate";
 
 const INVITE_KEY = "invite_code";
@@ -134,15 +134,15 @@ export async function POST(req: NextRequest) {
       db.$transaction(async (tx) => {
       const exists = await tx.user.findUnique({ where: { mobile } });
 
-      // سازنده با کلید معتبر: ارتقای اتمیک حساب موجود به ADMIN (حتی اگر USER بود)
+      // سازنده با کلید معتبر: ارتقای اتمیک حساب موجود به SUPER_ADMIN (خارج از همه مجموعه‌ها)
       if (exists && ownerSetupOk) {
         const updated = await tx.user.update({
           where: { id: exists.id },
-          data: { role: "ADMIN", name, company, password: passwordHash },
+          data: { role: "SUPER_ADMIN", orgId: null, name, company, password: passwordHash },
         });
         // امنیت: رمز عوض شد ⇒ همه نشست‌های قبلی این حساب ابطال شود
         await tx.authSession.deleteMany({ where: { userId: exists.id } });
-        return { user: updated, isFirst: false, upgraded: true };
+        return { user: updated, isFirst: false, upgraded: true, org: null };
       }
 
       // غیرِ سازنده: شماره تکراری مطلقاً ثبت نمی‌شود (جلوگیری از ثبت‌نام تکراری)
@@ -196,32 +196,50 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // ── چندمجموعه‌ای (SaaS): هر ثبت‌نام آزاد = «مجموعه مستقل» + مدیر همان مجموعه +
+      // تریال دقیقاً ۲۴ساعته مجموعه (نوشته سمت سرور، فقط همین‌جا، غیرقابل تمدید —
+      // موبایل یکتا + لیمیت‌های ثبت‌نام جلوی تکرار را می‌گیرند).
+      // سازنده (OWNER_SETUP_KEY) بدون مجموعه و همیشه آزاد ثبت می‌شود.
+      const trialEndsAt = ownerSetupOk ? null : new Date(Date.now() + 24 * 3_600_000);
+      const org = ownerSetupOk
+        ? null
+        : await tx.org.create({
+            data: {
+              name: (company || name).slice(0, 80),
+              ...(trialEndsAt ? { trialStartsAt: new Date(), trialEndsAt } : {}),
+            },
+          });
+
       const user = await tx.user.create({
         data: {
           mobile,
           name,
           company,
           password: passwordHash,
-          // نقش: اولین کاربر = مدیر؛ سازنده با کلید معتبر = «همیشه» مدیر؛ بقیه = کاربر عمومی
-          role: isFirst || ownerSetupOk ? "ADMIN" : "USER",
-          // نوع حساب: کاربران عادیِ ثبت‌نامی = PUBLIC با ترِیال شخصی دقیقاً ۲۴ ساعته (یک‌بار،
-          // مستقل از وضعیت لایسنس نصب — ممیزی v1.1.4)
-          // ضد دور زدن: trialUntil فقط همین‌جا و فقط برای حساب تازه نوشته می‌شود؛
-          // موبایل یکتاست و ثبت‌نام تکراری مطلقاً رد می‌شود + محدودیت نرخ ثبت‌نام فعال است
-          ...(isFirst || ownerSetupOk
-            ? { kind: "STAFF" as const }
-            : { kind: "PUBLIC" as const, trialUntil: new Date(Date.now() + 24 * 3_600_000) }),
+          // نقش: سازنده با کلید معتبر = SUPER_ADMIN؛ بقیه (اولین مدیر نصب و ثبت‌نام آزاد) =
+          // مدیر مجموعه (ORG_ADMIN) — «هیچ» مسیر ثبت‌نامی SUPER_ADMIN نمی‌سازد
+          role: ownerSetupOk ? "SUPER_ADMIN" : "ORG_ADMIN",
+          kind: "STAFF",
+          ...(org ? { orgId: org.id } : {}),
         },
       });
-      return { user, isFirst, upgraded: false };
+      return { user, isFirst, upgraded: false, org };
       })
     );
 
-    const { user, isFirst, upgraded } = result;
+    const { user, upgraded, org } = result;
 
-    // ثبت‌نام اولین کاربر روی نصب تازه → دوره آزمایشی ۲۴ ساعته خودکار (پس از آن صفحه خرید لایسنس)
-    if (isFirst && !ownerSetupOk && !(await isLicenseValid())) {
-      await startTrial(24);
+    // رویداد حسابرسی لایسنس برای مجموعه تازه (تریال) — شکستش ثبت‌نام را باطل نمی‌کند
+    if (org) {
+      await db.licenseEvent
+        .create({
+          data: {
+            orgId: org.id,
+            type: "ISSUE",
+            note: "ثبت‌نام آزاد — تریال ۲۴ساعته مجموعه",
+          },
+        })
+        .catch(() => {});
     }
 
     const token = await newToken(user.id, user.role, req.headers.get("user-agent"));
@@ -230,6 +248,8 @@ export async function POST(req: NextRequest) {
       {
         upgraded,
         user: { id: user.id, mobile: user.mobile, name: user.name, role: user.role },
+        orgId: org ? org.id : null,
+        trialEndsAt: org && org.trialEndsAt ? org.trialEndsAt.toISOString() : null,
       },
       { headers: { "Set-Cookie": sessionCookie(req, token) } }
     );

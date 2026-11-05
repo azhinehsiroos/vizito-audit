@@ -6,6 +6,9 @@ import {
   isLicenseValid,
   licenseLockPhase,
   licenseLockedResponseDetailed,
+  getOrgLockState,
+  orgLockedResponseDetailed,
+  type OrgLockState,
 } from "@/lib/license";
 
 /**
@@ -104,12 +107,16 @@ export type AuthContext = {
     name: string;
     company: string | null;
     role: string;
-    kind: string; // STAFF (پرسنل مدیر) | PUBLIC (کاربر عمومی)
+    kind: string; // STAFF (پرسنل) | PUBLIC (کاربر عمومی قدیمی v1.1.4)
   };
+  /** مجموعه کاربر — فقط SUPER_ADMIN بدون مجموعه است (و حساب‌های قدیمی قبل از بک‌فیل) */
+  org: { id: string; name: string; status: string; trialEndsAt: string | null } | null;
   sections: string[]; // دسترسی‌های فعال
   grantExpiresAt: string | null; // null در گرنت دائمی یا مدیر
-  isAdmin: boolean;
-  /** ترِیال شخصی فعال کاربر عمومی — برای نمایش شمارش معکوس در UI */
+  isAdmin: boolean; // سازگاری: SUPER_ADMIN یا ORG_ADMIN (یا ADMIN قدیمی)
+  isSuperAdmin: boolean; // سازنده برنامه — خارج از همه مجموعه‌ها
+  isOrgAdmin: boolean; // مدیر مجموعه (یا ADMIN قدیمی قبل از بک‌فیل)
+  /** ترِیال شخصی کاربر عمومی قدیمی — برای نمایش شمارش معکوس در UI */
   trialUntil?: string | null;
 };
 
@@ -171,56 +178,71 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
   if (!user) return null;
   // حساب غیرفعال — همه نشست‌ها عملاً بی‌اعتبار می‌شوند (سیاست سمت سرور، نه فقط UI)
   if (user.disabled) return null;
+  // چندمجموعه‌ای: orgId روی User ستون ساده است (بدون FK) — مجموعه جداگانه خوانده می‌شود
+  let org: AuthContext["org"] = null;
+  if (user.orgId) {
+    const o = await db.org.findUnique({
+      where: { id: user.orgId },
+      select: { id: true, name: true, status: true, trialEndsAt: true },
+    });
+    if (o) {
+      org = {
+        id: o.id,
+        name: o.name,
+        status: o.status,
+        trialEndsAt: o.trialEndsAt ? o.trialEndsAt.toISOString() : null,
+      };
+    }
+  }
   const kind = user.kind || "STAFF";
-  if (user.role === "ADMIN") {
+  const isSuperAdmin = user.role === "SUPER_ADMIN";
+  const isOrgAdmin = user.role === "ORG_ADMIN" || user.role === "ADMIN"; // ADMIN قدیمی — سازگاری قبل از بک‌فیل
+  const isAdmin = isSuperAdmin || isOrgAdmin;
+  const baseUser = {
+    id: user.id,
+    mobile: user.mobile,
+    name: user.name,
+    company: user.company,
+    role: user.role,
+    kind,
+  };
+  if (isAdmin) {
     return {
-      user: {
-        id: user.id,
-        mobile: user.mobile,
-        name: user.name,
-        company: user.company,
-        role: user.role,
-        kind,
-      },
+      user: baseUser,
+      org,
       sections: ALL_SECTIONS,
       grantExpiresAt: null,
       isAdmin: true,
+      isSuperAdmin,
+      isOrgAdmin,
     };
   }
   const now = new Date();
   // گرنت دائمی (expiresAt = null) همیشه معتبر است — سقف ۵/۱۰ ساله حذف شد
   const validGrants = user.grants.filter((g) => g.expiresAt === null || g.expiresAt > now);
   if (validGrants.length === 0) {
-    // ترِیال شخصی ۲۴ ساعته کاربر عمومی — دسترسی کامل (به‌جز مدیریت کاربران)
-    // فقط یک‌بار هنگام ثبت‌نام نوشته می‌شود؛ با ساخت حساب جدید قابل تکرار توسط همان شماره نیست
+    // ترِیال شخصی ۲۴ ساعته کاربر عمومی قدیمی (v1.1.4) — فقط برای حساب‌های قبل از مهاجرت SaaS
+    // ثبت‌نام‌های جدید به‌جای کاربر عمومی، «مجموعه مستقل با تریال مجموعه» می‌سازند
     if (kind === "PUBLIC" && user.trialUntil && user.trialUntil > now) {
       return {
-        user: {
-          id: user.id,
-          mobile: user.mobile,
-          name: user.name,
-          company: user.company,
-          role: user.role,
-          kind,
-        },
+        user: baseUser,
+        org,
         sections: ALL_SECTIONS.filter((s) => s !== "users"),
         grantExpiresAt: user.trialUntil.toISOString(),
         isAdmin: false,
+        isSuperAdmin,
+        isOrgAdmin,
         trialUntil: user.trialUntil.toISOString(),
       };
     }
     return {
-      user: {
-        id: user.id,
-        mobile: user.mobile,
-        name: user.name,
-        company: user.company,
-        role: user.role,
-        kind,
-      },
+      user: baseUser,
+      org,
       sections: [],
       grantExpiresAt: null,
       isAdmin: false,
+      isSuperAdmin,
+      isOrgAdmin,
     };
   }
   const grant = validGrants[0];
@@ -231,17 +253,13 @@ export async function getAuth(req: NextRequest): Promise<AuthContext | null> {
     sections = [];
   }
   return {
-    user: {
-      id: user.id,
-      mobile: user.mobile,
-      name: user.name,
-      company: user.company,
-      role: user.role,
-      kind,
-    },
+    user: baseUser,
+    org,
     sections,
     grantExpiresAt: grant.expiresAt ? grant.expiresAt.toISOString() : null,
     isAdmin: false,
+    isSuperAdmin,
+    isOrgAdmin,
   };
 }
 
@@ -434,20 +452,38 @@ export async function requireAuth(
   if (csrf) return { error: csrf };
   const ctx = await getAuth(req);
   if (!ctx) return { error: unauthorized() };
-  // قفل لایسنس (402) با تفکیک فاز:
-  //  - حساب مالک هیچ‌وقت قفل نمی‌شود (isLicenseValid برای مالک true است)
-  //  - پرسنل (STAFF) فقط از قفل «پایان ترِیال عمومی» معاف است — انقضای خود لایسنس همه را قفل می‌کند
-  //  - ممیزی v1.1.4: کاربر عمومی داخل «ترِیال شخصی دقیقاً ۲۴ ساعته» خودش از قفل نصب عبور می‌کند
-  //    (شروع ترِیال وابسته به زمان ثبت‌نام است، نه زمان ثبت‌نام دیگران یا نصب)
-  if (!(await isLicenseValid())) {
-    const phase = await licenseLockPhase();
-    const staffTrialExempt = !ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER";
-    const personalTrialActive =
-      !ctx.isAdmin &&
-      ctx.user.kind === "PUBLIC" &&
-      !!ctx.trialUntil &&
-      new Date(ctx.trialUntil).getTime() > Date.now();
-    if (!staffTrialExempt && !personalTrialActive) return { error: await licenseLockedResponseDetailed() };
+  // قفل لایسنس (402) — منبع حقیقت فقط سمت سرور:
+  //  - سازنده (SUPER_ADMIN) هیچ‌وقت قفل نمی‌شود
+  //  - کاربر مجموعه‌دار: قفل لایسنس «مجموعه خودش» (ترِیال/لایسنس/تعلیق) — مستقل از سایر مجموعه‌ها
+  //  - حساب قدیمی بدون مجموعه (پنجره استقرار قبل از بک‌فیل): همان رفتار نصبی v1.1.4
+  //  - کاربر عمومی قدیمی داخل ترِیال شخصی خودش آزاد است (سازگاری v1.1.4)
+  if (!ctx.isSuperAdmin) {
+    if (!ctx.org) {
+      if (!(await isLicenseValid())) {
+        const phase = await licenseLockPhase();
+        const staffTrialExempt = !ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER";
+        const personalTrialActive =
+          !ctx.isAdmin &&
+          ctx.user.kind === "PUBLIC" &&
+          !!ctx.trialUntil &&
+          new Date(ctx.trialUntil).getTime() > Date.now();
+        if (!staffTrialExempt && !personalTrialActive) return { error: await licenseLockedResponseDetailed() };
+      }
+    } else {
+      const lock = await getOrgLockState({
+        id: ctx.org.id,
+        status: ctx.org.status,
+        trialEndsAt: ctx.org.trialEndsAt,
+      });
+      if (lock.locked) {
+        const personalTrialActive =
+          !ctx.isAdmin &&
+          ctx.user.kind === "PUBLIC" &&
+          !!ctx.trialUntil &&
+          new Date(ctx.trialUntil).getTime() > Date.now();
+        if (!personalTrialActive) return { error: orgLockedResponseDetailed(ctx.org.id, lock) };
+      }
+    }
   }
   if (section && !ctx.isAdmin && !ctx.sections.includes(section)) {
     return { error: forbidden(`دسترسی به بخش «${section}» برای شما فعال نیست یا منقضی شده است`) };
@@ -461,15 +497,25 @@ export async function requireAuth(
  * پرسنل فقط از قفل ترِیال معاف؛ بقیه در قفل (مهلت/پس از مهلت)
  */
 export async function isUserLicenseLocked(ctx: AuthContext): Promise<boolean> {
-  if (await isLicenseValid()) return false;
-  if (
+  if (ctx.isSuperAdmin) return false;
+  const personalTrialActive =
     !ctx.isAdmin &&
     ctx.user.kind === "PUBLIC" &&
     !!ctx.trialUntil &&
-    new Date(ctx.trialUntil).getTime() > Date.now()
-  )
-    return false;
-  const phase = await licenseLockPhase();
-  if (!ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER") return false;
-  return true;
+    new Date(ctx.trialUntil).getTime() > Date.now();
+  if (!ctx.org) {
+    // پنجره استقرار قبل از بک‌فیل — رفتار نصبی قدیم
+    if (await isLicenseValid()) return false;
+    if (personalTrialActive) return false;
+    const phase = await licenseLockPhase();
+    if (!ctx.isAdmin && ctx.user.kind === "STAFF" && phase === "TRIAL_OVER") return false;
+    return true;
+  }
+  const lock: OrgLockState = await getOrgLockState({
+    id: ctx.org.id,
+    status: ctx.org.status,
+    trialEndsAt: ctx.org.trialEndsAt,
+  });
+  if (!lock.locked) return false;
+  return !personalTrialActive;
 }

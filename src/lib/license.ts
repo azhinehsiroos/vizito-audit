@@ -245,7 +245,8 @@ async function installLocked(lic: { payload: LicensePayload }): Promise<boolean>
 
 export async function isLicenseValid(): Promise<boolean> {
   // دسترسی همیشگی سازنده: اگر مدیر با موبایل سازنده روی این سرور ثبت شده باشد، قفل برداشته است
-  const owner = await db.user.findFirst({ where: { mobile: { in: OWNER_MOBILES }, role: "ADMIN" }, select: { id: true } });
+  // (SUPER_ADMIN نقش جدید SaaS + ADMIN قدیمی — سازگاری قبل از بک‌فیل)
+  const owner = await db.user.findFirst({ where: { mobile: { in: OWNER_MOBILES }, role: { in: ["SUPER_ADMIN", "ADMIN"] } }, select: { id: true } });
   if (owner) return true;
   const lic = await getStoredLicense();
   if (lic) {
@@ -260,7 +261,7 @@ export async function isLicenseValid(): Promise<boolean> {
 /** وضعیت کامل لایسنس برای نمایش */
 export async function getLicenseState(): Promise<LicenseState> {
   const installId = await getInstallId();
-  const owner = await db.user.findFirst({ where: { mobile: { in: OWNER_MOBILES }, role: "ADMIN" }, select: { id: true, mobile: true } });
+  const owner = await db.user.findFirst({ where: { mobile: { in: OWNER_MOBILES }, role: { in: ["SUPER_ADMIN", "ADMIN"] } }, select: { id: true, mobile: true } });
   if (owner) {
     return {
       activated: true,
@@ -377,4 +378,279 @@ export async function licenseLockedResponseDetailed(): Promise<Response> {
     },
     { status: 402 }
   );
+}
+
+// ═════════ چندمجموعه‌ای (SaaS v2.0) — لایسنس مستقل هر مجموعه ═════════
+
+export type OrgLockPhase =
+  | "ACTIVE"
+  | "NOT_ACTIVATED" // مجموعه بدون لایسنس و بدون تریال
+  | "TRIAL_OVER" // تریال ۲۴ساعته مجموعه تمام شده
+  | "LICENSE_EXPIRED" // لایسنس مدت‌دار منقضی شده (در مهلت یا پس از آن)
+  | "SUSPENDED"; // تعلیق مجموعه یا لایسنس توسط سازنده
+
+export type OrgLockState = {
+  locked: boolean;
+  phase: OrgLockPhase;
+  trial: boolean;
+  permanent: boolean;
+  suspended: boolean;
+  trialEndsAt: string | null;
+  expiresAt: string | null;
+  daysLeft: number | null;
+  graceUntil: string | null;
+  graceDaysLeft: number | null;
+};
+
+/**
+ * وضعیت قفل لایسنس «یک مجموعه» — منبع حقیقت فقط سمت سرور:
+ *  - تعلیق مجموعه یا لایسنس ← قفل کامل (سیاست تمدید/فعال‌سازی مجدد از پنل سازنده)
+ *  - لایسنس دائمی (PERM) یا مدت‌دارِ فعال ← باز
+ *  - بدون لایسنس: تریال ۲۴ساعته مجموعه — فقط سمت سرور و فقط هنگام ثبت‌نام نوشته می‌شود
+ * سیاست D2: انقضا هیچ‌گاه داده حذف نمی‌کند — فقط دسترسی مدیریتی محدود می‌شود
+ * (مهلت ۳۰ روزه فقط برای نمایش شمارش معکوس است، نه حذف).
+ */
+export async function getOrgLockState(org: {
+  id: string;
+  status: string;
+  trialEndsAt?: Date | string | null;
+}): Promise<OrgLockState> {
+  const trialEndsAt = org.trialEndsAt ? new Date(org.trialEndsAt) : null;
+  const base: OrgLockState = {
+    locked: false,
+    phase: "ACTIVE",
+    trial: false,
+    permanent: false,
+    suspended: false,
+    trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt.toISOString() : null,
+    expiresAt: null,
+    daysLeft: null,
+    graceUntil: null,
+    graceDaysLeft: null,
+  };
+  if (org.status === "SUSPENDED") {
+    return { ...base, locked: true, phase: "SUSPENDED", suspended: true };
+  }
+  const license = await db.license.findUnique({ where: { orgId: org.id } });
+  if (license) {
+    if (license.status === "SUSPENDED") {
+      return { ...base, locked: true, phase: "SUSPENDED", suspended: true };
+    }
+    if (license.expiresAt === null) {
+      return { ...base, permanent: true }; // دائمی — بدون انقضا
+    }
+    const eff = license.expiresAt.getTime();
+    if (eff > Date.now()) {
+      return {
+        ...base,
+        expiresAt: license.expiresAt.toISOString(),
+        daysLeft: Math.ceil((eff - Date.now()) / 86_400_000),
+      };
+    }
+    const graceUntilMs = eff + LICENSE_GRACE_MS;
+    return {
+      ...base,
+      locked: true,
+      phase: "LICENSE_EXPIRED",
+      expiresAt: license.expiresAt.toISOString(),
+      daysLeft: Math.ceil((eff - Date.now()) / 86_400_000),
+      graceUntil: new Date(graceUntilMs).toISOString(),
+      graceDaysLeft: Math.max(0, Math.ceil((graceUntilMs - Date.now()) / 86_400_000)),
+    };
+  }
+  // بدون لایسنس — وضعیت تریال مجموعه
+  if (!trialEndsAt || Number.isNaN(trialEndsAt.getTime())) {
+    return { ...base, locked: true, phase: "NOT_ACTIVATED" };
+  }
+  if (trialEndsAt.getTime() > Date.now()) {
+    return {
+      ...base,
+      trial: true,
+      daysLeft: Math.max(1, Math.ceil((trialEndsAt.getTime() - Date.now()) / 86_400_000)),
+    };
+  }
+  return { ...base, locked: true, phase: "TRIAL_OVER" };
+}
+
+/** پاسخ ۴۰۲ برای قفل لایسنس مجموعه — فاز + شناسه مجموعه (پیام پشتیبانی خودکار شناسه را دارد) */
+export function orgLockedResponseDetailed(orgId: string, lock: OrgLockState): Response {
+  const message =
+    lock.phase === "TRIAL_OVER"
+      ? "دوره آزمایشی رایگان مجموعه شما به پایان رسیده است — برای ادامه استفاده لایسنس تهیه کنید (اطلاعات شما محفوظ است)"
+      : lock.phase === "SUSPENDED"
+        ? "مجموعه شما موقتاً توسط پشتیبانی متوقف شده است — با پشتیبانی تماس بگیرید (اطلاعات شما محفوظ است)"
+        : lock.phase === "LICENSE_EXPIRED"
+          ? "لایسنس مجموعه شما منقضی شده است — برای تمدید با پشتیبانی تماس بگیرید (اطلاعات شما محفوظ است)"
+          : "لایسنس مجموعه شما هنوز فعال نشده است — با پشتیبانی تماس بگیرید (اطلاعات شما محفوظ است)";
+  return Response.json(
+    {
+      error: message,
+      code: "LICENSE_LOCKED",
+      lockPhase: lock.phase,
+      orgId,
+      trialEndsAt: lock.trialEndsAt,
+      expiresAt: lock.expiresAt,
+      daysLeft: lock.daysLeft,
+      graceDaysLeft: lock.graceDaysLeft,
+      graceUntil: lock.graceUntil,
+    },
+    { status: 402 }
+  );
+}
+
+// ═════════ VZT3 — کلید لایسنس مستقل هر مجموعه (SaaS v2.0) ═════════
+// همان رمزنگاری Ed25519 نسخه ۲ ولی گره‌خورده به «شناسه مجموعه» به‌جای شناسه نصب:
+//  - VZT3.<payload>.<signature> — payload: {v:3, o:orgId, e:epoch|0, n?:خریدار}
+//  - e = 0 یعنی دائمی
+//  - یک کلید فقط یک مجموعه را فعال می‌کند (payload.o) و ثبت hash آن در جدول License
+//    جلوی استفاده مجدد همان کلید برای مجموعه دیگر را می‌گیرد.
+
+/** خطای کنترل‌شدهٔ لایسنس — پیام آن مستقیماً به کلاینت برمی‌گردد (بدون جزئیات داخلی) */
+export class LicenseControlError extends Error {}
+
+export type OrgLicensePayload = {
+  v: 3;
+  o: string; // شناسه مجموعه مقصد — یک کلید فقط یک مجموعه
+  e: number; // انقضا (epoch ms) — صفر = دائمی
+  n?: string; // نام خریدار/مجموعه (نمایشی)
+};
+
+/** مدت‌های مجاز صدور — طبق سند تجاری: ۳۰/۹۰/۱۸۰/۳۶۵ روز + دائمی */
+export const PLAN_DAYS: Record<string, number> = { D30: 30, D90: 90, D180: 180, D365: 365 };
+
+export function isLicensePlan(v: unknown): v is "D30" | "D90" | "D180" | "D365" | "PERM" {
+  return typeof v === "string" && (v === "PERM" || v in PLAN_DAYS);
+}
+
+export function licenseKeyHash(key: string): string {
+  return crypto.createHash("sha256").update(key.trim()).digest("hex");
+}
+
+/** تولید کلید VZT3 (فقط سرور/سیستم سازنده — کلید خصوصی) */
+export function makeOrgLicenseKey(orgId: string, expiresAt: Date | null, buyerNote?: string): string {
+  if (!orgId || !String(orgId).trim()) {
+    throw new LicenseControlError("شناسه مجموعه برای صدور کلید الزامی است");
+  }
+  const pem = privateKeyPem();
+  if (!pem) throw new LicenseControlError("صدور کلید لایسنس روی این سرور فعال نیست (کلید خصوصی موجود نیست)");
+  const payload: OrgLicensePayload = {
+    v: 3,
+    o: String(orgId).trim().slice(0, 40),
+    e: expiresAt ? expiresAt.getTime() : 0,
+    ...(buyerNote ? { n: String(buyerNote).slice(0, 80) } : {}),
+  };
+  const body = b64url(Buffer.from(JSON.stringify(payload), "utf8"));
+  const sig = b64url(crypto.sign(null, Buffer.from(body), crypto.createPrivateKey(pem)));
+  return `VZT3.${body}.${sig}`;
+}
+
+/** اعتبارسنجی ساختار و امضای کلید VZT3 — بدون توجه به انقضا */
+export function parseOrgLicenseKey(key: string): OrgLicensePayload | null {
+  try {
+    const parts = key.trim().split(".");
+    if (parts.length !== 3 || parts[0] !== "VZT3") return null;
+    const [_, body, sig] = parts;
+    if (!body || !sig) return null;
+    const ok = crypto.verify(null, Buffer.from(body), publicKey(), fromB64url(sig));
+    if (!ok) return null;
+    const payload = JSON.parse(fromB64url(body).toString("utf8")) as OrgLicensePayload;
+    if (payload.v !== 3 || typeof payload.o !== "string" || !payload.o.trim() || typeof payload.e !== "number") {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function planFromExpiry(expMs: number, nowMs: number): string {
+  const days = Math.ceil((expMs - nowMs) / 86_400_000);
+  if (days <= 30) return "D30";
+  if (days <= 90) return "D90";
+  if (days <= 180) return "D180";
+  return "D365";
+}
+
+/**
+ * اعمال کلید VZT3 روی مجموعه — فعال‌سازی یا شارژ مجدد (سمت سرور، ضد سوءاستفاده):
+ *  ۱) مجموعه باید موجود و غیرمعلق باشد (رفع تعلیق فقط از سمت سازنده ممکن است)
+ *  ۲) کلید منقضی هرگز پذیرفته نمی‌شود — منقضی هرگز چرخه‌ای آغاز نمی‌کند (D2)
+ *  ۳) ضد استفاده مجدد: کلیدی که قبلاً روی «مجموعه دیگری» اعمال شده سوخته است
+ *  ۴) ضد تنزیل: انقضای جدید باید از انقضای مؤثر فعلی بیشتر باشد؛ PERM بالاتر از همه
+ * داده‌های مجموعه در هر حال دست‌نخورده می‌مانند.
+ */
+export async function activateOrgLicense(
+  key: string,
+  payload: OrgLicensePayload
+): Promise<{ orgId: string; orgName: string; plan: string; expiresAt: Date | null; permanent: boolean; daysLeft: number | null }> {
+  const org = await db.org.findUnique({
+    where: { id: payload.o },
+    select: { id: true, name: true, status: true },
+  });
+  if (!org) throw new LicenseControlError("این کلید برای مجموعه‌ای معتبر صادر نشده است");
+  if (org.status === "SUSPENDED") {
+    throw new LicenseControlError("مجموعه شما توسط پشتیبانی متوقف شده است — برای رفع تعلیق با پشتیبانی تماس بگیرید");
+  }
+  const permanent = payload.e === 0;
+  if (!permanent && payload.e < Date.now()) {
+    throw new LicenseControlError("این کد لایسنس منقضی شده است — برای تمدید از سازنده کلید جدید بگیرید");
+  }
+  const kHash = licenseKeyHash(key);
+  const usedElsewhere = await db.license.findFirst({
+    where: { currentKeyHash: kHash, orgId: { not: org.id } },
+    select: { orgId: true },
+  });
+  if (usedElsewhere) {
+    throw new LicenseControlError("این کلید قبلاً برای مجموعه دیگری استفاده شده است");
+  }
+  const existing = await db.license.findUnique({ where: { orgId: org.id } });
+  if (existing) {
+    if (existing.status === "SUSPENDED") {
+      throw new LicenseControlError("لایسنس این مجموعه توسط پشتیبانی متوقف شده است — با پشتیبانی تماس بگیرید");
+    }
+    const curEffective =
+      existing.expiresAt === null ? Number.MAX_SAFE_INTEGER : existing.expiresAt.getTime();
+    if (curEffective === Number.MAX_SAFE_INTEGER) {
+      throw new LicenseControlError("لایسنس فعلی این مجموعه دائمی است — کلید جدید جایگزین نمی‌شود");
+    }
+    if (existing.currentKeyHash === kHash && !permanent && payload.e <= curEffective) {
+      throw new LicenseControlError("این کلید قبلاً روی همین مجموعه اعمال شده است — کلید شارژ جدید بگیرید");
+    }
+    if (!permanent && payload.e <= curEffective) {
+      throw new LicenseControlError("این کلید جدیدتر از لایسنس فعلی نیست — کلید شارژ جدید را وارد کنید");
+    }
+  }
+  const plan = permanent ? "PERM" : planFromExpiry(payload.e, Date.now());
+  const expiresAt = permanent ? null : new Date(payload.e);
+  const daysLeft = permanent ? null : Math.max(1, Math.ceil((payload.e - Date.now()) / 86_400_000));
+  if (existing) {
+    await db.license.update({
+      where: { id: existing.id },
+      data: { plan, expiresAt, status: "ACTIVE", currentKeyHash: kHash },
+    });
+  } else {
+    await db.license.create({
+      data: {
+        orgId: org.id,
+        plan,
+        startsAt: new Date(),
+        expiresAt,
+        status: "ACTIVE",
+        source: "KEY",
+        currentKeyHash: kHash,
+      },
+    });
+  }
+  await db.licenseEvent
+    .create({
+      data: {
+        orgId: org.id,
+        type: "ACTIVATE",
+        plan,
+        actorName: payload.n ? `فعال‌سازی کلید (${payload.n})` : "فعال‌سازی کلید",
+        note: permanent ? "لایسنس دائمی با کلید VZT3" : `اعتبار تا ${expiresAt!.toISOString()}`,
+      },
+    })
+    .catch(() => {});
+  return { orgId: org.id, orgName: org.name, plan, expiresAt, permanent, daysLeft };
 }

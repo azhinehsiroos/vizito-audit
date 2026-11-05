@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAuth } from "@/lib/auth";
-import { getLicenseState, licenseLockDetail } from "@/lib/license";
+import { getLicenseState, getOrgLockState, licenseLockDetail } from "@/lib/license";
 import { db } from "@/lib/db";
 import { lifecycleState, runDataRetentionSweep } from "@/lib/lifecycle";
 
@@ -28,6 +28,35 @@ export async function GET(req: NextRequest) {
     // ممیزی v1.1.4 — فاز قفل (TRIAL_OVER/LICENSE_EXPIRED/NOT_ACTIVATED) برای نمایش پیام
     // درست «پایان مهلت رایگان» در صفحه لایسنس (بدون داده حساس)
     const phase = (await licenseLockDetail()).phase;
+    if (auth && auth.org) {
+      // ── چندمجموعه‌ای (SaaS): کاربر مجموعه‌دار ← وضعیت لایسنس «مجموعه خودش» ──
+      // منبع حقیقت: ترِیال/لایسنس/تعلیق مجموعه — مستقل از وضعیت نصبی و سایر مجموعه‌ها
+      const lock = await getOrgLockState({
+        id: auth.org.id,
+        status: auth.org.status,
+        trialEndsAt: auth.org.trialEndsAt ? new Date(auth.org.trialEndsAt) : null,
+      });
+      return Response.json({
+        activated: true,
+        valid: !lock.locked,
+        name: lock.trial ? auth.org.name : (lock.permanent ? auth.org.name : (state.name ?? auth.org.name)),
+        mobile: null,
+        expiresAt: lock.expiresAt ?? (lock.trial ? lock.trialEndsAt : state.expiresAt),
+        daysLeft: lock.daysLeft,
+        ownerUnlocked: false,
+        trial: lock.trial,
+        permanent: lock.permanent,
+        expiredAt: lock.phase === "LICENSE_EXPIRED" ? lock.expiresAt : null,
+        graceUntil: lock.graceUntil,
+        graceDaysLeft: lock.graceDaysLeft,
+        installId: state.installId ?? null,
+        phase: lock.locked ? lock.phase : "ACTIVE",
+        freshInstall,
+        org: { id: auth.org.id, name: auth.org.name, status: auth.org.status },
+        orgSuspended: lock.suspended,
+        trialEndsAt: lock.trialEndsAt,
+      });
+    }
     if (auth) {
       return Response.json({ ...state, phase, freshInstall });
     }

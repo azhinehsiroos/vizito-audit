@@ -18,6 +18,17 @@
  */
 export type ApiError = { error: string; status: number };
 
+/** هویت دستگاه (بخش ۵.۱ سند) — فقط شناسه است، نه اعتبارنامه؛ نشست همچنان کوکی HttpOnly */
+function deviceHeader(): Record<string, string> {
+  try {
+    // import دایره‌ای نداریم — خواندن مستقیم localStorage با همان کلید offline.ts
+    const id = typeof localStorage !== "undefined" ? localStorage.getItem("vizito-device-id") : null;
+    return id ? { "X-Vizito-Device": id.slice(0, 64) } : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function api<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown } = {}
@@ -25,6 +36,7 @@ export async function api<T = unknown>(
   // الزام امنیتی (ضد CSRF): هر درخواست تغییردهنده باید Content-Type: application/json داشته باشد
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...deviceHeader(),
   };
 
   const res = await fetch(path, {

@@ -291,11 +291,13 @@ check "خروج (logout)" 200 "$LO"
 ME2=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR3" "$BASE_URL/api/auth/me")
 check "نشست پس از خروج ابطال شده (me → 401)" 401 "$ME2"
 
-# پاک‌سازی کاربر تست توسط مدیر
+# چندمجموعه‌ای (SaaS v2.0): کاربر تازه‌ثبت‌نام = مدیر «مجموعه مستقل» —
+# حذف آن از مسیر /api/users توسط سازنده (بدون مجموعه) باید ۴۰۴ ماسک شود (جداسازی مجموعه‌ها).
+# این ۴۰۴ اکنون رفتار درست و مورد انتظار است؛ دیتابیس تست موقتی است و پاک‌سازی خودکار دارد.
 UID2=$(curl -s -b "$JAR2" "$BASE_URL/api/auth/me" | python3 -c "import sys,json;print(json.load(sys.stdin).get('user',{}).get('id',''))" 2>/dev/null)
 if [ -n "$UID2" ]; then
   DU=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/users/$UID2")
-  [ "$DU" = "200" ] || [ "$DU" = "204" ] && ok "کاربر تست پاک‌سازی شد" || bad "پاک‌سازی کاربر تست: $DU"
+  [ "$DU" = "404" ] && ok "حذف کاربر مجموعه دیگر توسط سازنده از این مسیر ماسک شد (404)" || bad "ماسک حذف cross-org: $DU"
 fi
 rm -f "$JAR2" "$JAR3"
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,21 @@ import {
   AlertTriangle,
   Hand,
   RefreshCw,
+  ArchiveRestore,
+  Upload,
 } from "lucide-react";
+
+type RestorePreviewData = {
+  scope: "ORG" | "FULL";
+  orgId: string | null;
+  orgName: string | null;
+  createdAt: string;
+  counts: Record<string, number>;
+  tableLabels: Record<string, string>;
+  warnings: string[];
+};
+
+type RestoreSource = { id?: string; file?: string; label: string };
 
 type BackupRow = {
   id: string;
@@ -85,6 +99,15 @@ export function BackupView() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetPassword, setResetPassword] = useState("");
   const [resetting, setResetting] = useState(false);
+  // بازیابی (Restore) — جریان دومرحله‌ای: پیش‌نمایش ← تأیید
+  const [preview, setPreview] = useState<RestorePreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [source, setSource] = useState<RestoreSource | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmName, setConfirmName] = useState("");
+  const [restorePassword, setRestorePassword] = useState("");
+  const [restoring, setRestoring] = useState(false);
+  const uploadRef = useRef<HTMLInputElement>(null);
 
   const isAdmin = !!me?.isAdmin;
 
@@ -168,6 +191,66 @@ export function BackupView() {
       await load();
     } catch (e) {
       toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+    }
+  };
+
+  /** مرحله ۱ بازیابی: رمزگشایی و پیش‌نمایش شمارش‌ها — هیچ داده‌ای تغییر نمی‌کند */
+  const openPreview = async (src: RestoreSource) => {
+    setPreviewLoading(true);
+    try {
+      const res = await api<RestorePreviewData>("/api/backups/restore/preview", {
+        method: "POST",
+        body: src.id ? { id: src.id } : { file: src.file },
+      });
+      setSource(src);
+      setPreview(res);
+    } catch (e) {
+      toast({ title: "بازیابی ممکن نیست", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  /** بازیابی از فایل آپلودی — همان جریان پیش‌نمایش/تأیید */
+  const onUploadFile = async (f: File | null) => {
+    if (!f) return;
+    if (f.size > 64 * 1024 * 1024) {
+      toast({ title: "حجم فایل بیش از سقف است", description: "سقف مجاز ۶۴ مگابایت است", variant: "destructive" });
+      return;
+    }
+    const text = await f.text();
+    await openPreview({ file: text, label: f.name });
+    if (uploadRef.current) uploadRef.current.value = "";
+  };
+
+  /** مرحله ۲ بازیابی: رمز + تایپ نام ⇒ جایگزینی تراکنشی */
+  const doRestore = async () => {
+    if (!source || !preview) return;
+    setRestoring(true);
+    try {
+      const result = await api<{ ok: boolean; sessionsRevoked: number }>("/api/backups/restore/confirm", {
+        method: "POST",
+        body: {
+          ...(source.id ? { id: source.id } : { file: source.file }),
+          password: restorePassword,
+          confirmName,
+        },
+      });
+      toast({
+        title: "بازیابی انجام شد ✅",
+        description: `داده‌ها به نسخه انتخاب‌شده برگشت — ${toFa(result?.sessionsRevoked ?? 0)} نشست باطل شد`,
+      });
+      setConfirmOpen(false);
+      setPreview(null);
+      setSource(null);
+      setConfirmName("");
+      setRestorePassword("");
+      // داده‌ها عوض شده‌اند — بارگذاری کامل برای همگام‌شدن همه بخش‌ها (نشست عملیات‌دهنده باقی است)
+      setTimeout(() => window.location.reload(), 600);
+    } catch (e) {
+      toast({ title: "بازیابی ناموفق بود", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -346,6 +429,16 @@ export function BackupView() {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label={`بازیابی نسخه ${formatJalaliDateTime(b.createdAt)}`}
+                        disabled={previewLoading || restoring}
+                        onClick={() => openPreview({ id: b.id, label: formatJalaliDateTime(b.createdAt) })}
+                      >
+                        <ArchiveRestore className="h-4 w-4 text-primary" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="دانلود نسخه پشتیبان" onClick={() => download(b)}>
                         <Download className="h-4 w-4" />
                       </Button>
@@ -370,6 +463,38 @@ export function BackupView() {
               به‌روزرسانی فهرست
             </Button>
           )}
+        </CardContent>
+      </Card>
+
+      {/* بازیابی از فایل آپلودی */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Upload className="h-4 w-4 text-primary" />
+            بازیابی از فایل
+          </CardTitle>
+          <CardDescription>
+            فایل پشتیبان رمزنگاری‌شدهٔ همین نصب را انتخاب کنید — ابتدا پیش‌نمایش شمارش‌ها نمایش داده می‌شود؛ هیچ داده‌ای قبل از تأیید دومرحله‌ای تغییر نمی‌کند.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <input
+            ref={uploadRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            aria-label="انتخاب فایل پشتیبان برای بازیابی"
+            onChange={(e) => onUploadFile(e.target.files?.[0] ?? null)}
+          />
+          <Button
+            variant="outline"
+            className="w-full"
+            disabled={previewLoading || restoring}
+            onClick={() => uploadRef.current?.click()}
+          >
+            {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            انتخاب فایل پشتیبان…
+          </Button>
         </CardContent>
       </Card>
 
@@ -400,6 +525,122 @@ export function BackupView() {
         </CardContent>
       </Card>
       ) : null}
+
+      {/* ── دیالوگ پیش‌نمایش بازیابی (مرحله ۱) ── */}
+      <Dialog open={!!preview} onOpenChange={(v) => { if (!v) { setPreview(null); setSource(null); } }}>
+        <DialogContent className="max-w-sm max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArchiveRestore className="h-5 w-5 text-primary" />
+              پیش‌نمایش بازیابی
+            </DialogTitle>
+            <DialogDescription>
+              {preview?.scope === "FULL"
+                ? "بکاپ کامل سرور — همه مجموعه‌ها و حساب‌ها جایگزین می‌شوند."
+                : preview?.orgName
+                  ? `بکاپ مجموعه «${preview.orgName}» — داده‌های فعلی این مجموعه جایگزین می‌شوند.`
+                  : ""}
+              {" "}
+              {source?.id ? `نسخه: ${source.label}` : `فایل: ${source?.label ?? ""}`}
+            </DialogDescription>
+          </DialogHeader>
+          {preview && (
+            <div className="space-y-3">
+              <div className="text-xs text-muted-foreground">
+                زمان تهیه نسخه: <span className="font-semibold text-foreground">{formatJalaliDateTime(preview.createdAt)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {Object.entries(preview.counts).map(([k, n]) => (
+                  <div key={k} className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/40 px-2.5 py-1.5 text-[11px]">
+                    <span className="text-muted-foreground">{preview.tableLabels[k] || k}</span>
+                    <span className="font-bold">{toFa(n)}</span>
+                  </div>
+                ))}
+              </div>
+              {preview.warnings.length > 0 && (
+                <div className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 p-2.5">
+                  {preview.warnings.map((w, i) => (
+                    <p key={i} className="text-[11px] leading-5 text-amber-800 dark:text-amber-300">⚠ {w}</p>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                در مرحله بعد برای تأیید، رمز عبور شما و تایپ نام خواسته می‌شود. تا پیش از تأیید، هیچ داده‌ای تغییر نمی‌کند.
+              </p>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setPreview(null); setSource(null); }}>
+              انصراف
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => { setConfirmOpen(true); }}
+            >
+              ادامه به تأیید…
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── دیالوگ تأیید نهایی بازیابی (مرحله ۲ — رمز + تایپ نام) ── */}
+      <Dialog open={confirmOpen} onOpenChange={(v) => { setConfirmOpen(v); if (!v) { setRestorePassword(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              تأیید نهایی بازیابی
+            </DialogTitle>
+            <DialogDescription>
+              {preview?.scope === "FULL"
+                ? `این عمل، همه داده‌های فعلی سرور را با نسخه انتخاب‌شده جایگزین می‌کند و قابل بازگشت نیست. برای تأیید، عبارت «بازیابی کامل» و رمز عبور خود را وارد کنید.`
+                : `داده‌های فعلی مجموعه با نسخه انتخاب‌شده جایگزین می‌شوند و قابل بازگشت نیست. برای تأیید، نام مجموعه و رمز عبور خود را وارد کنید.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="restore-confirm-name">
+                {preview?.scope === "FULL" ? `تایپ عبارت «بازیابی کامل»` : `تایپ نام مجموعه: «${preview?.orgName ?? ""}»`}
+              </Label>
+              <Input
+                id="restore-confirm-name"
+                value={confirmName}
+                onChange={(e) => setConfirmName(e.target.value)}
+                placeholder={preview?.scope === "FULL" ? "بازیابی کامل" : preview?.orgName ?? ""}
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="restore-pass">رمز عبور شما</Label>
+              <Input
+                id="restore-pass"
+                type="password"
+                placeholder="••••••"
+                value={restorePassword}
+                onChange={(e) => setRestorePassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && doRestore()}
+                autoComplete="current-password"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground leading-5">
+              پس از بازیابی، نشست سایر کاربران برای اطمینان باطل می‌شود و باید دوباره وارد شوند.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={restoring}>
+              انصراف
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={doRestore}
+              disabled={restoring || !restorePassword || !confirmName.trim()}
+            >
+              {restoring && <Loader2 className="h-4 w-4 animate-spin" />}
+              جایگزینی داده‌ها
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* تأیید پاک‌سازی با رمز مدیر */}
       <Dialog open={resetOpen} onOpenChange={(v) => { setResetOpen(v); if (!v) setResetPassword(""); }}>

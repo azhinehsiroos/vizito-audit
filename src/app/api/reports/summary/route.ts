@@ -6,20 +6,22 @@ export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "reports");
   if ("error" in auth) return auth.error;
   try {
-    // آمار هر کاربر فقط در محدوده دسترسی خودش: مدیر/دارای all_customers ← همه؛ بقیه فقط مشتری‌ها و سفارش‌های خودشان
+    // آمار هر کاربر فقط در محدوده مجموعه + دسترسی خودش
     const allAccess = canSeeAllCustomers(auth.ctx);
-    const customerWhere = allAccess ? {} : { createdBy: auth.ctx.user.id };
+    const orgScope = auth.ctx.org ? { orgId: auth.ctx.org.id } : {};
+    const customerWhere = { ...orgScope, ...(allAccess ? {} : { createdBy: auth.ctx.user.id }) };
     // ممیزی v1.1.2 — فاکتورهای خرید (نوع PURCHASE) برای کاربر بدون مجوز purchase_price
     // در آمار فروش هم نمی‌آیند (خودِ فاکتور هم برای او نمایش داده نمی‌شود)
     const orderWhere = {
+      ...orgScope,
       ...(allAccess ? {} : { OR: [{ customer: { createdBy: auth.ctx.user.id } }, { createdByUserId: auth.ctx.user.id }] }),
       ...(canSeePurchasePrice(auth.ctx) ? {} : { priceType: { not: "PURCHASE" as const } }),
     };
 
     const [customerCount, productCount, groupCount, orders, orderCount] = await Promise.all([
       db.customer.count({ where: customerWhere }),
-      db.product.count(),
-      db.productGroup.count(),
+      db.product.count({ where: orgScope }),
+      db.productGroup.count({ where: orgScope }),
       db.order.findMany({
         where: orderWhere,
         select: { id: true, totalAmount: true, createdAt: true, customerId: true, items: true },

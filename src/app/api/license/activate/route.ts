@@ -1,7 +1,18 @@
 import { NextRequest } from "next/server";
-import { activateLicense, getLicenseState, parseLicenseKey, getInstallId, getStoredLicense } from "@/lib/license";
+import {
+  activateLicense,
+  activateOrgLicense,
+  getLicenseState,
+  getOrgLockState,
+  parseLicenseKey,
+  parseOrgLicenseKey,
+  getInstallId,
+  getStoredLicense,
+  LicenseControlError,
+} from "@/lib/license";
 import { rateLimit, retryAfterSeconds, getClientIp } from "@/lib/rate-limit";
 import { csrfGate } from "@/lib/auth";
+import { db } from "@/lib/db";
 
 /**
  * فعال‌سازی / شارژ مجدد لایسنس با کلید — عمومی (وقتی برنامه قفل است کاربر راهی برای ورود ندارد)
@@ -28,6 +39,34 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "کلید لایسنس را وارد کنید" }, { status: 400 });
     }
     const key = body.key.trim();
+
+    // ── مسیر SaaS: کلید VZT3 — لایسنس مستقل هر مجموعه ──
+    const orgPayload = parseOrgLicenseKey(key);
+    if (orgPayload) {
+      try {
+        const r = await activateOrgLicense(key, orgPayload);
+        return Response.json({
+          ok: true,
+          orgId: r.orgId,
+          name: r.orgName,
+          plan: r.plan,
+          permanent: r.permanent,
+          expiresAt: r.expiresAt ? r.expiresAt.toISOString() : null,
+          daysLeft: r.daysLeft,
+          customer: orgPayload.n || r.orgName,
+        });
+      } catch (e) {
+        if (e instanceof LicenseControlError) {
+          return Response.json({ error: e.message }, { status: 400 });
+        }
+        console.error("org license activate error", e);
+        return Response.json(
+          { error: "خطا در فعال‌سازی لایسنس — کلید را بررسی کنید یا با سازنده تماس بگیرید" },
+          { status: 400 }
+        );
+      }
+    }
+
     const payload = parseLicenseKey(key);
     if (!payload) {
       return Response.json({ error: "کلید لایسنس نامعتبر است" }, { status: 400 });

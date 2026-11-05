@@ -90,12 +90,36 @@ export async function setSchedule(value: ScheduleValue): Promise<void> {
   });
 }
 
-/** جمع‌آوری کامل داده‌های برنامه برای فایل پشتیبان */
-async function collectData() {
+/**
+ * جمع‌آوری داده برای فایل پشتیبان — چندمجموعه‌ای:
+ *  - orgId = null → بکاپ کامل سرور (فقط سازنده/زمان‌بند): همه مجموعه‌ها + دفتر فروش لایسنس + جداول جدید
+ *  - orgId = مجموعه → فقط داده‌های همان مجموعه؛ دفتر فروش لایسنس، تنظیمات سراسری سازنده و
+ *    پیام‌های سازنده به کاربرانِ سایر مجموعه‌ها هرگز در بکاپ مجموعه نمی‌آید
+ */
+async function collectData(orgId: string | null = null) {
   // امنیت: authSessions (هش توکن‌های فعال) هرگز در بکاپ نمی‌آید — نشست‌ها قابل بازسازی نیستند و لازم نیست
-  // ممیزی v1.1.2 — Message/MessageRecipient هم در بکاپ می‌آیند؛ نبودِ آن‌ها یعنی
-  // هر بازیابی، تاریخ پیام‌ها و وضعیت خوانده‌شدن را برای همیشه از دست می‌داد
-  const [users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients] = await Promise.all([
+  if (orgId) {
+    const [users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, messageRecipients] = await Promise.all([
+      db.user.findMany({ where: { orgId } }),
+      db.accessGrant.findMany({ where: { user: { orgId } } }),
+      db.customer.findMany({ where: { orgId } }),
+      db.productGroup.findMany({ where: { orgId } }),
+      db.product.findMany({ where: { orgId } }),
+      db.order.findMany({ where: { orgId } }),
+      db.orderItem.findMany({ where: { order: { orgId } } }),
+      db.payment.findMany({ where: { orgId } }),
+      db.notification.findMany({ where: { user: { orgId } } }),
+      db.messageRecipient.findMany({ where: { user: { orgId } } }),
+    ]);
+    return {
+      vizitoBackupVersion: BACKUP_VERSION,
+      createdAt: new Date().toISOString(),
+      scope: "ORG" as const,
+      orgId,
+      tables: { users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, messageRecipients },
+    };
+  }
+  const [users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients, orgs, licenses, licenseEvents, supportThreads, supportMessages, devices] = await Promise.all([
     db.user.findMany(),
     db.accessGrant.findMany(),
     db.customer.findMany(),
@@ -110,23 +134,31 @@ async function collectData() {
     db.setting.findMany(),
     db.message.findMany(),
     db.messageRecipient.findMany(),
+    db.org.findMany(),
+    db.license.findMany(),
+    db.licenseEvent.findMany(),
+    db.supportThread.findMany(),
+    db.supportMessage.findMany(),
+    db.device.findMany(),
   ]);
   return {
     vizitoBackupVersion: BACKUP_VERSION,
     createdAt: new Date().toISOString(),
-    tables: { users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients },
+    scope: "FULL" as const,
+    orgId: null,
+    tables: { users, accessGrants, customers, productGroups, products, orders, orderItems, payments, notifications, licenseSales, licenseCharges, settings, messages, messageRecipients, orgs, licenses, licenseEvents, supportThreads, supportMessages, devices },
   };
 }
 
-function countOf(data: Awaited<ReturnType<typeof collectData>>): string {
-  const t = data.tables;
+function countOf(data: { tables: Record<string, unknown[]> }): string {
+  const n = (k: string) => (data.tables[k] || []).length;
   return JSON.stringify({
-    users: t.users.length,
-    customers: t.customers.length,
-    products: t.products.length,
-    orders: t.orders.length,
-    payments: t.payments.length,
-    messages: t.messages.length,
+    users: n("users"),
+    customers: n("customers"),
+    products: n("products"),
+    orders: n("orders"),
+    payments: n("payments"),
+    messages: n("messages"),
   });
 }
 
@@ -186,10 +218,11 @@ export function decryptBackupEnvelope(text: string): string {
 /** ساخت نسخه پشتیبان جدید و بازگرداندن متادیتای آن */
 export async function createBackup(
   kind: BackupKind,
-  by?: { id: string; name: string } | null
+  by?: { id: string; name: string } | null,
+  orgId: string | null = null
 ): Promise<{ id: string; kind: string; fileName: string; sizeBytes: number; createdAt: Date; counts: string; createdByName: string | null }> {
   ensureDir();
-  const data = await collectData();
+  const data = await collectData(orgId);
   const installId = await getInstallId();
   const envelope = encryptBackup(JSON.stringify(data), installId);
   const buf = Buffer.from(JSON.stringify(envelope), "utf8");
@@ -205,10 +238,11 @@ export async function createBackup(
     fs.renameSync(tmpPath, finalPath);
     const row = await db.backup.create({
       data: {
+        orgId,
         kind,
         fileName,
         sizeBytes: buf.length,
-        counts: countOf(data),
+        counts: countOf({ tables: data.tables as unknown as Record<string, unknown[]> }),
         createdBy: kind === "MANUAL" ? by?.id ?? null : null,
         createdByName: kind === "MANUAL" ? by?.name?.slice(0, 80) ?? null : null,
       },

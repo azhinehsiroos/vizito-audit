@@ -28,6 +28,7 @@ import { api } from "@/lib/api";
 import { formatJalali, toFa } from "@/lib/jalali";
 import { CUSTOMER_TYPES } from "@/lib/sections";
 import type { Customer } from "@/lib/types";
+import { readSnapshot, mirror } from "@/lib/offline";
 import { toast } from "@/hooks/use-toast";
 import {
   Search,
@@ -45,6 +46,7 @@ import {
   Users,
   Archive,
   ArchiveRestore,
+  CloudOff,
 } from "lucide-react";
 
 const emptyForm = {
@@ -57,7 +59,7 @@ const emptyForm = {
 };
 
 export function CustomersView() {
-  const { setView, me } = useApp();
+  const { setView, me, online } = useApp();
   const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [query, setQuery] = useState("");
   // ممیزی v1.0.9 — نمایش فعال/آرشیو: حذف مشتریِ دارای سابقه = آرشیو (نه حذف)
@@ -75,8 +77,20 @@ export function CustomersView() {
       const qs = params.toString();
       const data = await api<Customer[]>(`/api/customers${qs ? `?${qs}` : ""}`);
       setCustomers(data);
-    } catch (e) {
-      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+      // آینه‌سازی برای حالت آفلاین — فقط فهرست بدون فیلتر (منبع سفارش‌گیری آفلاین)
+      if (!q && !archived) void mirror("customers", data);
+    } catch {
+      // قطعی — اسنپ‌شات آخرین همگام‌سازی (فقط خواندن)
+      const snap = await readSnapshot<Customer[]>("customers");
+      if (snap) {
+        setCustomers(snap.value);
+        return;
+      }
+      toast({
+        title: "حالت آفلاین",
+        description: "هیچ داده همگام‌سازی‌شده‌ای روی این دستگاه نیست — پس از اتصال دوباره تلاش کنید",
+        variant: "destructive",
+      });
       setCustomers([]);
     }
   }, []);
@@ -86,12 +100,21 @@ export function CustomersView() {
   }, [query, showArchived, load]);
 
   const openCreate = () => {
+    // قفل آفلاین (بخش ۵.۲ سند): ثبت/ویرایش مشتری ممنوع — سرور هم مستقل رد می‌کند
+    if (!online) {
+      toast({ title: "حالت آفلاین", description: "در حالت آفلاین ثبت/ویرایش مشتری ممکن نیست", variant: "destructive" });
+      return;
+    }
     setEditing(null);
     setForm(emptyForm);
     setDialogOpen(true);
   };
 
   const openEdit = (c: Customer) => {
+    if (!online) {
+      toast({ title: "حالت آفلاین", description: "در حالت آفلاین ثبت/ویرایش مشتری ممکن نیست", variant: "destructive" });
+      return;
+    }
     setEditing(c);
     setForm({
       name: c.name,
@@ -128,6 +151,10 @@ export function CustomersView() {
   };
 
   const remove = async (c: Customer) => {
+    if (!online) {
+      toast({ title: "حالت آفلاین", description: "در حالت آفلاین حذف/آرشیو مشتری ممکن نیست", variant: "destructive" });
+      return;
+    }
     // ممیزی v1.0.9 — مشتریِ دارای سفارش/پرداخت هرگز سخت‌حذف نمی‌شود؛ سرور او را آرشیو می‌کند
     if (showArchived) {
       if (!confirm(`حذف دائمی «${c.name}»؟ فقط اگر هیچ سفارش و پرداختی نداشته باشد حذف می‌شود؛ در غیر این صورت در آرشیو می‌ماند.`)) return;
@@ -151,6 +178,10 @@ export function CustomersView() {
   };
 
   const unarchive = async (c: Customer) => {
+    if (!online) {
+      toast({ title: "حالت آفلاین", description: "در حالت آفلاین بازگردانی مشتری ممکن نیست", variant: "destructive" });
+      return;
+    }
     try {
       await api(`/api/customers/${c.id}`, { method: "PATCH", body: { archived: false } });
       toast({ title: "بازگردانی شد ✅", description: "مشتری به فهرست فعالان برگشت" });
@@ -182,10 +213,23 @@ export function CustomersView() {
           <h1 className="font-bold text-lg">مشتریان</h1>
           <p className="text-[10px] text-muted-foreground mt-0.5">{scopeHint}</p>
         </div>
-        <Button size="sm" onClick={openCreate}>
+        <Button size="sm" onClick={openCreate} aria-disabled={!online}>
           <Plus className="h-4 w-4" /> مشتری جدید
         </Button>
       </div>
+
+      {/* اطلاع فقط‌خواندنی آفلاین — بخش ۵.۲ سند */}
+      {!online && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>
+            نمایش از آخرین همگام‌سازی دستگاه — ثبت/ویرایش/حذف مشتری در حالت آفلاین ممکن نیست؛ سفارش‌گیری از همین فهرست آزاد است.
+          </span>
+        </div>
+      )}
 
       <div className="relative">
         <Search className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground" />

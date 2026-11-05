@@ -671,6 +671,7 @@ function PricingSettingsCard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prices, setPrices] = useState<Record<DurationKey, string>>({ m1: "", m3: "", m6: "", y1: "", perm: "" });
   const [telegram, setTelegram] = useState("");
+  const [phone, setPhone] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
@@ -686,6 +687,7 @@ function PricingSettingsCard() {
             perm: d.prices.perm ?? "",
           });
         if (d && typeof d.telegram === "string") setTelegram(d.telegram);
+        if (d && typeof d.phone === "string") setPhone(d.phone);
       })
       .catch(() => {});
   }, []);
@@ -693,7 +695,7 @@ function PricingSettingsCard() {
   const saveSettings = async () => {
     setSavingSettings(true);
     try {
-      const res = await api<{ ok: boolean; prices: Record<DurationKey, string>; telegram: string }>("/api/license/settings", {
+      const res = await api<{ ok: boolean; prices: Record<DurationKey, string>; telegram: string; phone: string }>("/api/license/settings", {
         method: "PUT",
         body: {
           prices: {
@@ -704,10 +706,12 @@ function PricingSettingsCard() {
             perm: prices.perm.trim(),
           },
           telegram: telegram.trim().replace(/^@/, ""),
+          phone: phone.trim(),
         },
       });
       setPrices(res.prices);
       setTelegram(res.telegram);
+      setPhone(res.phone ?? "");
       toast({ title: "تنظیمات فروش ذخیره شد ✅", description: "تعرفه‌ها در صفحه قفل لایسنس نمایش داده می‌شود" });
       setSettingsOpen(false);
     } catch (e) {
@@ -782,7 +786,7 @@ function PricingSettingsCard() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="support-telegram" className="text-[10px] text-muted-foreground">
-                آیدی تلگرام پشتیبانی (بدون @)
+                آیدی تلگرام پشتیبانی (بدون @) — مسیر جایگزین
               </Label>
               <Input
                 id="support-telegram"
@@ -790,6 +794,20 @@ function PricingSettingsCard() {
                 value={telegram}
                 onChange={(e) => setTelegram(e.target.value)}
                 placeholder="vizito_support"
+                className="h-9 text-[12px]"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="support-phone" className="text-[10px] text-muted-foreground">
+                شماره تماس/پیامک پشتیبانی — مسیر داخلی بدون تلگرام
+              </Label>
+              <Input
+                id="support-phone"
+                dir="ltr"
+                inputMode="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="02112345678"
                 className="h-9 text-[12px]"
               />
             </div>
@@ -804,6 +822,7 @@ function PricingSettingsCard() {
             </div>
             <p className="text-[10px] text-muted-foreground leading-4">
               قیمت خالی یعنی «تماس بگیرید» نمایش داده می‌شود؛ آیدی تلگرام خالی یعنی دکمه خرید مخفی می‌شود.
+              شماره تماس در صفحه پشتیبانی و صفحه قفل لایسنس نمایش داده می‌شود؛ ارتباط اصلی مشتری از طریق «پشتیبانی داخلی» همین برنامه است.
             </p>
           </div>
         )}

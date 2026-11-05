@@ -6,7 +6,7 @@ import { db } from "@/lib/db";
  */
 export async function GET() {
   const rows = await db.setting.findMany({
-    where: { key: { in: ["license_prices", "support_telegram"] } },
+    where: { key: { in: ["license_prices", "support_telegram", "support_phone"] } },
   });
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   let prices = { m1: "", m3: "", m6: "", y1: "", perm: "" };
@@ -18,6 +18,8 @@ export async function GET() {
   return Response.json({
     prices,
     telegram: map.support_telegram || "",
+    // شماره تماس/پیامک پشتیبانی — مسیر جایگزین (بخش چهارم سند) — نمایش در صفحه قفل و پشتیبانی
+    phone: map.support_phone || "",
     durations: [
       { key: "m1", label: "۱ ماهه", days: 30 },
       { key: "m3", label: "۳ ماهه", days: 90 },

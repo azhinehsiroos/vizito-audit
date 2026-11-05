@@ -20,6 +20,9 @@ import {
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { formatJalali, toFa, formatMoney, toEnDigits } from "@/lib/jalali";
+import { outboxEnqueue, outboxList, outboxRemove } from "@/lib/idb";
+import { Textarea } from "@/components/ui/textarea";
+import { Phone, LifeBuoy } from "lucide-react";
 
 export type LicenseState = {
   activated: boolean;
@@ -35,10 +38,14 @@ export type LicenseState = {
   graceUntil?: string | null;
   graceDaysLeft?: number | null;
   installId?: string | null;
-  /** فاز قفل (TRIAL_OVER / LICENSE_EXPIRED / NOT_ACTIVATED) — برای پیام درست «پایان مهلت رایگان» */
+  /** فاز قفل (TRIAL_OVER / LICENSE_EXPIRED / NOT_ACTIVATED / SUSPENDED) — برای پیام درست «پایان مهلت رایگان» */
   phase?: string | null;
   /** نصب تازه (هیچ حسابی نیست) — به‌جای این صفحه، صفحه ورود/ثبت‌نام مدیر اول نشان داده می‌شود */
   freshInstall?: boolean;
+  /** چندمجموعه‌ای (SaaS): مجموعه کاربر واردشده — وضعیت لایسنس از مجموعه خوانده می‌شود */
+  org?: { id: string; name: string; status: string } | null;
+  orgSuspended?: boolean;
+  trialEndsAt?: string | null;
 };
 
 type DurationKey = "m1" | "m3" | "m6" | "y1" | "perm";
@@ -46,6 +53,7 @@ type DurationKey = "m1" | "m3" | "m6" | "y1" | "perm";
 type Pricing = {
   prices: Record<DurationKey, string>;
   telegram: string;
+  phone?: string;
   durations: { key: DurationKey; label: string; days: number }[];
 };
 
@@ -100,6 +108,8 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
   const expired = state.activated && !state.valid;
   // پایان مهلت استفاده رایگان (ترِیال) — پیام الزامی دستور کار (ممیزی v1.1.4)
   const trialOver = state.phase === "TRIAL_OVER";
+  // تعلیق مجموعه توسط پشتیبانی (SaaS) — رفع آن فقط از سمت سازنده ممکن است
+  const suspended = !!state.orgSuspended || state.phase === "SUSPENDED";
 
   // تعرفه‌های فروش — عمومی و بدون احراز هویت
   useEffect(() => {
@@ -168,13 +178,20 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
 
           <div className="space-y-1">
             <h1 className="font-black text-lg">
-              {trialOver
-                ? "مهلت استفاده رایگان شما به پایان رسیده است"
-                : expired
-                  ? "لایسنس منقضی شده"
-                  : "فعال‌سازی لایسنس ویزیتو"}
+              {suspended
+                ? "مجموعه شما موقتاً متوقف شده است"
+                : trialOver
+                  ? "مهلت استفاده رایگان شما به پایان رسیده است"
+                  : expired
+                    ? "لایسنس منقضی شده"
+                    : "فعال‌سازی لایسنس ویزیتو"}
             </h1>
-            {trialOver ? (
+            {suspended ? (
+              <p className="text-xs text-muted-foreground leading-6">
+                دسترسی این مجموعه به‌صورت موقت توسط پشتیبانی متوقف شده است. تمام اطلاعات شما محفوظ است؛
+                برای رفع تعلیق با پشتیبانی تماس بگیرید.
+              </p>
+            ) : trialOver ? (
               <p className="text-xs text-muted-foreground leading-6">
                 برای ادامه استفاده از ویزیتو، لایسنس تهیه کنید و کد آن را در کادر زیر وارد کنید.
                 تمام اطلاعات شما (مشتریان، سفارش‌ها، پرداخت‌ها) محفوظ است و با فعال‌سازی لایسنس
@@ -248,11 +265,32 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
           {state.activated && state.name && (
             <div className="text-[11px] text-muted-foreground flex items-center justify-center gap-1.5">
               <Clock3 className="h-3.5 w-3.5" />
-              دارنده: {state.name} {state.mobile ? `— ${toFa(state.mobile)}` : ""}
+              {state.org ? `مجموعه: ${state.org.name}` : `دارنده: ${state.name} ${state.mobile ? `— ${toFa(state.mobile)}` : ""}`}
             </div>
           )}
 
-          {state.installId && (
+          {/* شناسه مجموعه — همراه درخواست خرید/تمدید/پشتیبانی خودکار شناسه را حمل می‌کند */}
+          {state.org ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/40 p-2.5 text-right">
+              <div className="min-w-0">
+                <p className="text-[10px] text-muted-foreground">شناسه مجموعه — هنگام خرید/تمدید به فروشنده بفرستید</p>
+                <p dir="ltr" className="text-xs font-mono font-bold text-foreground truncate">
+                  {state.org.id}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0"
+                onClick={() => {
+                  void navigator.clipboard.writeText(state.org?.id || "");
+                  toast({ title: "شناسه مجموعه کپی شد ✅" });
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : state.installId && (
             <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/40 p-2.5 text-right">
               <div className="min-w-0">
                 <p className="text-[10px] text-muted-foreground">شناسه نصب — هنگام خرید به فروشنده بفرستید</p>
@@ -300,6 +338,13 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
             </Button>
           )}
 
+          {/* پشتیبانی داخلی — پیام درون‌برنامه‌ای (حتی در قفل باز است) + مسیرهای جایگزین */}
+          <SupportSection
+            hasOrg={!!state.org}
+            defaultSubject={suspended ? "GENERAL" : trialOver || expired ? "RENEW" : "GENERAL"}
+            phone={pricing.phone || ""}
+          />
+
           <div className="space-y-2 text-right">
             <Label htmlFor="license-key" className="text-xs">
               کد لایسنس خود را وارد کنید
@@ -307,7 +352,7 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
             <Input
               id="license-key"
               dir="ltr"
-              placeholder="VZT2.xxxxxxxx.xxxxxxxx"
+              placeholder="VZT3.xxxxxxxx.xxxxxxxx"
               value={key}
               onChange={(e) => setKey(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !busy && activate()}
@@ -328,6 +373,174 @@ export function LicenseScreen({ state, onActivated }: { state: LicenseState; onA
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * بخش پشتیبانی صفحه قفل — الزام بخش ۲ و ۴ سند: در قفل/تعلیق «فقط پشتیبانی» باز است.
+ * کاربر مجموعه‌دار می‌تواند همین‌جا پیام بفرستد (بدون تلگرام؛ فقط سرور ایرانی)؛
+ * پیام مجموعه را سمت سرور خودکار حمل می‌کند و پاسخ پس از رفع قفل در «پشتیبانی» دیده می‌شود.
+ * مسیرهای جایگزین (شماره تماس/تلگرام) هم نمایش داده می‌شود.
+ */
+const SUBJECT_ITEMS = [
+  { key: "GENERAL", label: "عمومی / رفع تعلیق" },
+  { key: "BUY_LICENSE", label: "خرید لایسنس" },
+  { key: "RENEW", label: "تمدید لایسنس" },
+];
+
+function SupportSection({ hasOrg, defaultSubject, phone }: { hasOrg: boolean; defaultSubject: string; phone: string }) {
+  const [open, setOpen] = useState(false);
+  const [subject, setSubject] = useState(defaultSubject);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [queued, setQueued] = useState(0);
+
+  // شمارش صف انتظار + تخلیه خودکار با بازگشت اتصال
+  useEffect(() => {
+    if (!open) return;
+    const refresh = () => void outboxList().then((items) => setQueued(items.length));
+    refresh();
+    const flush = async () => {
+      const items = await outboxList();
+      let createdThreadId = "";
+      let didSend = false;
+      for (const item of items) {
+        try {
+          if (item.threadId) {
+            await fetch(`/api/support/threads/${item.threadId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body: item.body, clientRef: item.clientRef }),
+            }).then((r) => {
+              if (!r.ok && r.status !== 409) throw new Error("failed");
+            });
+          } else if (createdThreadId) {
+            await fetch(`/api/support/threads/${createdThreadId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body: item.body, clientRef: item.clientRef }),
+            }).then((r) => {
+              if (!r.ok && r.status !== 409) throw new Error("failed");
+            });
+          } else {
+            const res = await fetch("/api/support/threads", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ subjectType: item.subjectType, body: item.body, clientRef: item.clientRef }),
+            });
+            if (!res.ok && res.status !== 409) throw new Error("failed");
+            const d = (await res.json().catch(() => null)) as { thread?: { id?: string } } | null;
+            if (d?.thread?.id) createdThreadId = d.thread.id;
+          }
+          await outboxRemove(item.clientRef);
+          didSend = true;
+        } catch {
+          break; // هنوز قطع است — تا ack سرور در صف می‌ماند
+        }
+      }
+      if (didSend) refresh();
+    };
+    window.addEventListener("online", flush);
+    refresh();
+    return () => window.removeEventListener("online", flush);
+  }, [open]);
+
+  const send = async () => {
+    const body = text.trim();
+    if (!body || busy) return;
+    if (!hasOrg) {
+      toast({ title: "برای ارسال پیام وارد حساب شوید", description: "یا از مسیرهای جایگزین تماس استفاده کنید", variant: "destructive" });
+      return;
+    }
+    setBusy(true);
+    const clientRef = "crypto" in window && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-vzt`;
+    await outboxEnqueue({ clientRef, threadId: "", subjectType: subject, body, createdAt: new Date().toISOString() });
+    try {
+      const res = await fetch("/api/support/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subjectType: subject, body, clientRef }),
+      });
+      if (!res.ok && res.status !== 409) throw new Error("failed");
+      await outboxRemove(clientRef);
+      setSent(true);
+      setText("");
+      toast({ title: "پیام شما ثبت شد ✅", description: "پاسخ پشتیبانی پس از ورود در بخش «پشتیبانی» نمایش داده می‌شود" });
+    } catch {
+      // در صف ماند — با بازگشت اینترنت خودکار ارسال می‌شود
+      setQueued((q) => q + 1);
+      setSent(true);
+      setText("");
+      toast({ title: "ذخیره شد", description: "اینترنت در دسترس نیست — پیام با بازگشت اتصال خودکار ارسال می‌شود" });
+    } finally {
+      setBusy(false);
+      void outboxList().then((items) => setQueued(items.length));
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-secondary/40 p-3 text-right space-y-2">
+      <button type="button" className="w-full flex items-center gap-1.5" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <LifeBuoy className="h-3.5 w-3.5 text-primary" />
+        <span className="text-xs font-bold text-primary flex-1 text-right">پشتیبانی درون‌برنامه‌ای</span>
+        <span className="text-[10px] text-muted-foreground">{open ? "بستن" : "ارسال پیام"}</span>
+      </button>
+
+      {open && (
+        <div className="space-y-2 pt-1">
+          {!sent ? (
+            <>
+              <div className="flex gap-1.5 flex-wrap">
+                {SUBJECT_ITEMS.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSubject(s.key)}
+                    className={`rounded-full px-2.5 py-1 text-[10px] border transition-colors ${
+                      subject === s.key
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "border-border text-muted-foreground hover:bg-accent/60"
+                    }`}
+                    aria-pressed={subject === s.key}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              <Textarea
+                value={text}
+                onChange={(e) => setText(e.target.value.slice(0, 4000))}
+                placeholder="درخواست خود را بنویسید — شناسه مجموعه شما خودکار پیوست می‌شود…"
+                className="min-h-16 text-[12px] bg-background"
+                aria-label="متن پیام پشتیبانی"
+              />
+              <Button size="sm" className="w-full gap-1.5" onClick={send} disabled={busy || !text.trim()}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                ارسال به پشتیبانی
+              </Button>
+            </>
+          ) : (
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-400 leading-5">
+              پیام شما ثبت شد. پاسخ پس از رفع محدودیت، در بخش «پشتیبانی» برنامه نمایش داده می‌شود.
+              {queued > 0 && ` (${toFa(queued)} پیام در انتظار ارسال)`}
+            </p>
+          )}
+          {/* مسیرهای جایگزین — شماره تماس از تنظیمات سازنده */}
+          {phone.trim() && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full h-8 text-[11px] gap-1.5"
+              onClick={() => (window.location.href = `tel:${phone}`)}
+            >
+              <Phone className="h-3.5 w-3.5" />
+              تماس تلفنی: <span dir="ltr">{toFa(phone)}</span>
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

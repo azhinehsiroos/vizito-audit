@@ -45,6 +45,7 @@ import { api } from "@/lib/api";
 import { formatMoney, toFa } from "@/lib/jalali";
 import { fileToCompressedDataUrl } from "@/lib/image";
 import type { Product, ProductGroup } from "@/lib/types";
+import { readSnapshot, mirror } from "@/lib/offline";
 import { toast } from "@/hooks/use-toast";
 import {
   Plus,
@@ -58,6 +59,7 @@ import {
   Camera,
   Loader2,
   Lock,
+  CloudOff,
 } from "lucide-react";
 
 const emptyProduct = {
@@ -76,7 +78,7 @@ const emptyProduct = {
 };
 
 export function ProductsView() {
-  const { setView, can } = useApp();
+  const { setView, can, online } = useApp();
   const canPurchase = can("purchase_price");
   const [groups, setGroups] = useState<ProductGroup[] | null>(null);
   const [groupDialog, setGroupDialog] = useState(false);
@@ -93,7 +95,21 @@ export function ProductsView() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<{ run: () => Promise<void> } | null>(null);
 
+  // قفل آفلاین (بخش ۵.۲ سند): ثبت/ویرایش کالا/گروه/قیمت/تخفیف ممنوع — سرور هم مستقل رد می‌کند
+  const requireOnline = (): boolean => {
+    if (!online) {
+      toast({
+        title: "حالت آفلاین",
+        description: "در حالت آفلاین ثبت/ویرایش کالا و گروه ممکن نیست",
+        variant: "destructive",
+      });
+      return false;
+    }
+    return true;
+  };
+
   const requestConfirm = (run: () => Promise<void>) => {
+    if (!requireOnline()) return;
     setPendingAction({ run });
     setConfirmOpen(true);
   };
@@ -109,8 +125,20 @@ export function ProductsView() {
     try {
       const data = await api<ProductGroup[]>("/api/groups");
       setGroups(data);
-    } catch (e) {
-      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+      // آینه‌سازی برای سفارش‌گیری آفلاین (منبع قیمت‌های منجمد بخش ۵.۳)
+      void mirror("groups", data);
+    } catch {
+      // قطعی — اسنپ‌شات آخرین همگام‌سازی (فقط خواندن)
+      const snap = await readSnapshot<ProductGroup[]>("groups");
+      if (snap) {
+        setGroups(snap.value);
+        return;
+      }
+      toast({
+        title: "حالت آفلاین",
+        description: "هیچ داده همگام‌سازی‌شده‌ای روی این دستگاه نیست — پس از اتصال دوباره تلاش کنید",
+        variant: "destructive",
+      });
       setGroups([]);
     }
   }, []);
@@ -168,6 +196,7 @@ export function ProductsView() {
 
   // ---- کالاها ----
   const openCreateProduct = (groupId?: string) => {
+    if (!requireOnline()) return;
     setEditingProduct(null);
     setForm({
       ...emptyProduct,
@@ -177,6 +206,7 @@ export function ProductsView() {
   };
 
   const openEditProduct = (p: Product) => {
+    if (!requireOnline()) return;
     setEditingProduct(p);
     setForm({
       groupId: p.groupId,
@@ -284,11 +314,24 @@ export function ProductsView() {
           <Button size="sm" variant="outline" onClick={goToCatalog}>
             <FolderOpen className="h-4 w-4" /> کاتالوگ
           </Button>
-          <Button size="sm" onClick={() => openCreateProduct()}>
+          <Button size="sm" onClick={() => openCreateProduct()} aria-disabled={!online}>
             <Plus className="h-4 w-4" /> کالای جدید
           </Button>
         </div>
       </div>
+
+      {/* اطلاع فقط‌خواندنی آفلاین — بخش ۵.۲ سند */}
+      {!online && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>
+            نمایش از آخرین همگام‌سازی دستگاه — ثبت/ویرایش کالا، گروه، قیمت و تخفیف در حالت آفلاین ممکن نیست.
+          </span>
+        </div>
+      )}
 
       {!groups ? (
         <div className="space-y-2">
@@ -304,6 +347,7 @@ export function ProductsView() {
               size="sm"
               variant="secondary"
               onClick={() => {
+                if (!requireOnline()) return;
                 setEditingGroup(null);
                 setGroupName("");
                 setGroupDialog(true);
@@ -341,6 +385,7 @@ export function ProductsView() {
                     variant="ghost"
                     className="h-7 text-[11px]"
                     onClick={() => {
+                      if (!requireOnline()) return;
                       setEditingGroup(g);
                       setGroupName(g.name);
                       setGroupDialog(true);
@@ -419,6 +464,7 @@ export function ProductsView() {
         variant="secondary"
         className="w-full"
         onClick={() => {
+          if (!requireOnline()) return;
           setEditingGroup(null);
           setGroupName("");
           setGroupDialog(true);

@@ -27,10 +27,12 @@ function dueDaysOrNull(v: unknown): number | null {
   return Math.min(3650, Math.max(1, Math.round(n)));
 }
 
-/** شرط محدوده سفارش‌ها: مدیر/دارای all_customers ← همه؛ بقیه فقط سفارش‌های مشتری‌های خودشان یا سفارش‌های خودشان */
+/** شرط محدوده سفارش‌ها: اول مجموعه خود کاربر؛ بعد مدیر/دارای all_customers ← همهِ مجموعه؛ بقیه فقط سفارش‌های خودشان */
 function orderScope(ctx: AuthContext) {
-  if (canSeeAllCustomers(ctx)) return {};
+  const orgScope = ctx.org ? { orgId: ctx.org.id } : {};
+  if (canSeeAllCustomers(ctx)) return orgScope;
   return {
+    ...orgScope,
     OR: [{ customer: { createdBy: ctx.user.id } }, { createdByUserId: ctx.user.id }],
   };
 }
@@ -73,7 +75,9 @@ export async function POST(req: NextRequest) {
     const customerId = strField(body.customerId, 40);
     if (!customerId) return Response.json({ error: "انتخاب مشتری الزامی است" }, { status: 400 });
     const customer = await db.customer.findUnique({ where: { id: customerId } });
-    if (!customer) return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
+    if (!customer || (auth.ctx.org && customer.orgId !== auth.ctx.org.id)) {
+      return Response.json({ error: "مشتری یافت نشد" }, { status: 404 });
+    }
     // ممیزی v1.1.2 — مشتری آرشیوشده خارج از چرخه فعال است؛ سفارش جدید روی او ثبت نمی‌شود
     if (customer.archived) {
       return Response.json(
@@ -109,7 +113,7 @@ export async function POST(req: NextRequest) {
     const productMap = new Map<string, { name: string; volume: string | null; priceStore: number; pricePharmacy: number; priceSalon: number; pricePurchase: number }>();
     if (productIds.length > 0) {
       const found = await db.product.findMany({
-        where: { id: { in: [...new Set(productIds)] } },
+        where: { id: { in: [...new Set(productIds)] }, ...(auth.ctx.org ? { orgId: auth.ctx.org.id } : {}) },
         select: { id: true, name: true, volume: true, priceStore: true, pricePharmacy: true, priceSalon: true, pricePurchase: true },
       });
       for (const p of found) productMap.set(p.id, p);
@@ -176,6 +180,7 @@ export async function POST(req: NextRequest) {
 
     const order = await db.order.create({
       data: {
+        orgId: auth.ctx.org ? auth.ctx.org.id : null,
         customerId,
         createdByUserId: auth.ctx.user.id,
         title: strOrNull(body.title, 120),

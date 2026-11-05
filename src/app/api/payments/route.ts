@@ -6,10 +6,11 @@ import { strField, strOrNull, clampNum, isFiniteDate } from "@/lib/validate";
 /** انواع تسویه مجاز: نقد / چک پای‌بار / رسید */
 const VALID_PAYMENT_TYPES = ["CASH", "CHECK", "RECEIPT"] as const;
 
-/** محدودیت دسترسی به یک مشتری: مدیر/دارای all_customers ← همه؛ بقیه فقط مشتری‌های خودشان */
+/** محدودیت دسترسی به یک مشتری: اول مجموعه؛ بعد مدیر/دارای all_customers ← همهِ مجموعه؛ بقیه فقط مشتری‌های خودشان */
 async function customerInScope(customerId: string, ctx: AuthContext) {
   const customer = await db.customer.findUnique({ where: { id: customerId } });
   if (!customer) return null;
+  if (ctx.org && customer.orgId !== ctx.org.id) return null;
   if (!canSeeAllCustomers(ctx) && customer.createdBy !== ctx.user.id) return null;
   return customer;
 }
@@ -126,6 +127,7 @@ export async function POST(req: NextRequest) {
 
     const payment = await db.payment.create({
       data: {
+        orgId: auth.ctx.org ? auth.ctx.org.id : null,
         customerId,
         orderId,
         type,

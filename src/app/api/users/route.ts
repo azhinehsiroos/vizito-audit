@@ -8,7 +8,9 @@ export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "users");
   if ("error" in auth) return auth.error;
   if (!auth.ctx.isAdmin) return forbidden("فقط مدیر به این بخش دسترسی دارد");
+  // چندمجموعه‌ای: مدیر فقط کاربران مجموعه خودش؛ سازنده (بدون مجموعه) همه را می‌بیند
   const users = await db.user.findMany({
+    where: auth.ctx.org ? { orgId: auth.ctx.org.id } : {},
     include: { grants: { orderBy: { createdAt: "desc" } } },
     orderBy: { createdAt: "asc" },
   });
@@ -53,7 +55,10 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "ساخت کاربر با این شماره مجاز نیست" }, { status: 403 });
     }
 
-    const role = body.role === "ADMIN" ? "ADMIN" : "USER";
+    // نقش‌های مجاز برای تعریف توسط مدیر مجموعه — SUPER_ADMIN هرگز از این مسیر ساخته نمی‌شود
+    const VALID_TARGET_ROLES = ["VISITOR", "SALES_MANAGER", "ORG_ADMIN"] as const;
+    const requested = typeof body.role === "string" ? body.role.trim().toUpperCase() : "VISITOR";
+    const role = (VALID_TARGET_ROLES as readonly string[]).includes(requested) ? requested : "VISITOR";
     const user = await db.user.create({
       data: {
         mobile,
@@ -61,7 +66,9 @@ export async function POST(req: NextRequest) {
         company: strField(body.company, 80) || null,
         password: await hashPassword(password),
         role,
-        kind: "STAFF", // کاربر تعریف‌شده توسط مدیر = پرسنل (معاف از قفل ترِیال عمومی)
+        // چندمجموعه‌ای: کاربر جدید همیشه عضو همان مجموعه مدیرِ سازنده است
+        orgId: auth.ctx.org ? auth.ctx.org.id : null,
+        kind: "STAFF", // کاربر تعریف‌شده توسط مدیر = پرسنل مجموعه
       },
     });
 
@@ -69,7 +76,7 @@ export async function POST(req: NextRequest) {
     // مدت: durationHours = null ⇒ اعتبار دائمی واقعی (بدون سقف ۵/۱۰ ساله)
     //      durationHours = عدد ⇒ ساعتی (سقف منطقی ۱۰۰ سال برای جلوگیری از سرریز تاریخ)
     const sections = filterSections(body.sections).filter((s) => s !== "users");
-    if (role === "USER" && sections.length > 0 && body.durationHours !== undefined) {
+    if (role !== "ORG_ADMIN" && sections.length > 0 && body.durationHours !== undefined) {
       let expiresAt: Date | null = null;
       if (body.durationHours === null) {
         expiresAt = null; // دائمی واقعی

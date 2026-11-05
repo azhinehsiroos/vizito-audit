@@ -25,13 +25,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
     }
     const target = await db.user.findUnique({ where: { id } });
     if (!target) return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
+    // چندمجموعه‌ای: فقط کاربران همان مجموعه (سازنده/پنجره قبل از بک‌فیل بدون مجموعه = همه)
+    if ((auth.ctx.org ? auth.ctx.org.id : null) !== (target.orgId ?? null)) {
+      return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
+    }
     // امنیت: حساب سازنده فقط توسط خود سازنده قابل تغییر است (حذف/رمز/غیرفعال‌سازی)
     if (isOwnerMobile(target.mobile) && !isOwnerMobile(auth.ctx.user.mobile)) {
       return Response.json({ error: "تغییر این حساب مجاز نیست" }, { status: 403 });
     }
     // غیرفعال‌سازی فقط برای حساب‌های پرسنلی/کاربر — حساب مدیر از این مسیر غیرفعال نمی‌شود
     if (disableAction !== null) {
-      if (target.role === "ADMIN") {
+      if (target.role === "ADMIN" || target.role === "ORG_ADMIN" || target.role === "SUPER_ADMIN") {
         return Response.json({ error: "حساب مدیر از این مسیر غیرفعال نمی‌شود" }, { status: 400 });
       }
       if (target.id === auth.ctx.user.id) {
@@ -71,15 +75,25 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const target = await db.user.findUnique({ where: { id } });
     if (!target) return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
+    // چندمجموعه‌ای: فقط کاربران همان مجموعه
+    if ((auth.ctx.org ? auth.ctx.org.id : null) !== (target.orgId ?? null)) {
+      return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
+    }
     // امنیت: حساب سازنده حذف نمی‌شود (مگر توسط خود سازنده)
     if (isOwnerMobile(target.mobile) && !isOwnerMobile(auth.ctx.user.mobile)) {
       return Response.json({ error: "حذف این حساب مجاز نیست" }, { status: 403 });
     }
-    // جلوگیری از حذف آخرین مدیر سیستم
-    if (target.role === "ADMIN") {
-      const adminCount = await db.user.count({ where: { role: "ADMIN" } });
+    // جلوگیری از حذف آخرین مدیر مجموعه/سیستم
+    if (target.role === "ADMIN" || target.role === "ORG_ADMIN" || target.role === "SUPER_ADMIN") {
+      const adminCount = await db.user.count({
+        where: {
+          role: { in: ["ADMIN", "ORG_ADMIN", "SUPER_ADMIN"] },
+          // شمارش فقط داخل همان مجموعه (حساب بدون مجموعه = پنجره قبل از بک‌فیل/سازنده)
+          ...(target.orgId ? { orgId: target.orgId } : { orgId: null }),
+        },
+      });
       if (adminCount <= 1) {
-        return Response.json({ error: "آخرین مدیر سیستم قابل حذف نیست" }, { status: 400 });
+        return Response.json({ error: "آخرین مدیر قابل حذف نیست" }, { status: 400 });
       }
     }
     // نشست‌های فعال کاربر هم با حذف کاربر (cascade) باطل می‌شوند

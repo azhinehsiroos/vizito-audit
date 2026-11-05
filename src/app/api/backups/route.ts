@@ -14,7 +14,8 @@ export async function GET(req: NextRequest) {
   if (!auth.ctx.isAdmin) return forbidden("پشتیبان‌گیری فقط توسط مدیر برنامه امکان‌پذیر است");
   try {
     const [backups, schedule, lastAuto] = await Promise.all([
-      db.backup.findMany({ orderBy: { createdAt: "desc" }, take: 60 }),
+      // چندمجموعه‌ای: مدیر فقط نسخه‌های مجموعه خودش؛ سازنده (بدون مجموعه) همه را می‌بیند
+      db.backup.findMany({ where: auth.ctx.org ? { orgId: auth.ctx.org.id } : {}, orderBy: { createdAt: "desc" }, take: 60 }),
       getSchedule(),
       lastAutoBackups(),
     ]);
@@ -46,7 +47,8 @@ export async function POST(req: NextRequest) {
     return tooMany(retryAfterSeconds(key), "تعداد پشتیبان‌گیری‌های دستی زیاد است — کمی بعد دوباره تلاش کنید");
   }
   try {
-    const row = await createBackup("MANUAL", { id: auth.ctx.user.id, name: auth.ctx.user.name });
+    // چندمجموعه‌ای: بکاپ مدیر مجموعه فقط شامل داده‌های مجموعه خودش است
+    const row = await createBackup("MANUAL", { id: auth.ctx.user.id, name: auth.ctx.user.name }, auth.ctx.org ? auth.ctx.org.id : null);
     return Response.json({
       backup: {
         id: row.id,

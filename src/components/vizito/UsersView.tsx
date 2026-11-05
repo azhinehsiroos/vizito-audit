@@ -31,6 +31,7 @@ import { DURATION_PRESETS, expiryLabel, formatJalali, toFa } from "@/lib/jalali"
 import type { AppUser } from "@/lib/types";
 import { toast } from "@/hooks/use-toast";
 import { useApp } from "@/lib/store";
+import { CloudOff } from "lucide-react";
 import {
   UserCog,
   UserPlus,
@@ -105,7 +106,20 @@ function DurationSelect({ value, onChange }: { value: string; onChange: (v: stri
 }
 
 export function UsersView() {
-  const { me } = useApp();
+  const { me, online } = useApp();
+
+  // قفل آفلاین (بخش ۵.۲ سند): ثبت/ویرایش کاربر ممنوع — سرور هم مستقل رد می‌کند
+  const requireOnline = (): boolean => {
+    if (!online) {
+      toast({
+        title: "حالت آفلاین",
+        description: "در حالت آفلاین مدیریت کاربران ممکن نیست",
+        variant: "destructive",
+      });
+      return false;
+    }
+    return true;
+  };
   const [users, setUsers] = useState<AppUser[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [grantUser, setGrantUser] = useState<AppUser | null>(null);
@@ -129,9 +143,13 @@ export function UsersView() {
     try {
       const data = await api<AppUser[]>("/api/users");
       setUsers(data);
-    } catch (e) {
-      toast({ title: "خطا", description: (e as Error).message, variant: "destructive" });
+    } catch {
       setUsers([]);
+      toast({
+        title: "حالت آفلاین",
+        description: "مدیریت کاربران به اتصال اینترنت نیاز دارد",
+        variant: "destructive",
+      });
     }
   }, []);
 
@@ -147,6 +165,7 @@ export function UsersView() {
   };
 
   const createUser = async () => {
+    if (!requireOnline()) return;
     if (!createForm.mobile.trim() || !createForm.name.trim() || createForm.password.length < 8) {
       toast({
         title: "خطا",
@@ -207,6 +226,7 @@ export function UsersView() {
 
   const savePassword = async () => {
     if (!pwUser) return;
+    if (!requireOnline()) return;
     if (pwValue.length < 8) {
       toast({ title: "خطا", description: "رمز عبور باید حداقل ۸ کاراکتر باشد", variant: "destructive" });
       return;
@@ -225,6 +245,7 @@ export function UsersView() {
 
   const saveGrant = async () => {
     if (!grantUser) return;
+    if (!requireOnline()) return;
     if (grantSections.length === 0) {
       toast({ title: "خطا", description: "حداقل یک بخش را انتخاب کنید", variant: "destructive" });
       return;
@@ -252,6 +273,7 @@ export function UsersView() {
 
   // فعال/غیرفعال‌سازی مستقل حساب — بدون حذف اطلاعات؛ نشست‌ها سمت سرور ابطال می‌شود
   const toggleDisabled = async (u: AppUser) => {
+    if (!requireOnline()) return;
     const action = !u.disabled;
     if (
       action &&
@@ -273,6 +295,7 @@ export function UsersView() {
   };
 
   const removeUser = async (u: AppUser) => {
+    if (!requireOnline()) return;
     if (!confirm(`کاربر «${u.name}» حذف شود؟`)) return;
     try {
       await api(`/api/users/${u.id}`, { method: "DELETE" });
@@ -292,6 +315,7 @@ export function UsersView() {
   };
 
   const sendNote = async () => {
+    if (!requireOnline()) return;
     if (!noteTitle.trim()) {
       toast({ title: "خطا", description: "عنوان پیام الزامی است", variant: "destructive" });
       return;
@@ -326,10 +350,21 @@ export function UsersView() {
         <h1 className="font-bold text-lg flex items-center gap-2">
           <UserCog className="h-5 w-5 text-primary" /> مدیریت کاربران
         </h1>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
+        <Button size="sm" onClick={() => setCreateOpen(true)} aria-disabled={!online}>
           <UserPlus className="h-4 w-4" /> کاربر جدید
         </Button>
       </div>
+
+      {/* اطلاع آفلاین — بخش ۵.۲ سند: مدیریت کاربران ممنوع */}
+      {!online && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-2"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>حالت آفلاین — مدیریت کاربران و ارسال یادداشت پس از بازگشت اتصال ممکن است.</span>
+        </div>
+      )}
 
       {/* ارسال یادداشت/پیام به کاربران (۱۱-۵) */}
       <Button variant="secondary" size="sm" className="w-full justify-start" onClick={() => openNoteDialog()}>

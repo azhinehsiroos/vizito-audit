@@ -19,7 +19,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     };
     const user = await db.user.findUnique({ where: { id } });
     if (!user) return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
-    if (user.role === "ADMIN") {
+    // چندمجموعه‌ای: فقط کاربران همان مجموعه
+    if ((auth.ctx.org ? auth.ctx.org.id : null) !== (user.orgId ?? null)) {
+      return Response.json({ error: "کاربر یافت نشد" }, { status: 404 });
+    }
+    if (user.role === "ADMIN" || user.role === "ORG_ADMIN" || user.role === "SUPER_ADMIN") {
       return Response.json({ error: "کاربر مدیر به دسترسی نیاز ندارد" }, { status: 400 });
     }
     const sections = filterSections(body.sections).filter((s) => s !== "users");

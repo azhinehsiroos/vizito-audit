@@ -22,6 +22,10 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const row = await db.backup.findUnique({ where: { id } });
     if (!row) return Response.json({ error: "نسخه پشتیبان یافت نشد" }, { status: 404 });
+    // چندمجموعه‌ای: مدیر مجموعه فقط بکاپ مجموعه خودش — بکاپ سایر مجموعه‌ها و بکاپ کامل سرور (سازنده) ۴۰۴
+    if (auth.ctx.org && row.orgId !== auth.ctx.org.id) {
+      return Response.json({ error: "نسخه پشتیبان یافت نشد" }, { status: 404 });
+    }
     const p = safeBackupPath(row.fileName);
     if (!p || !fs.existsSync(p)) {
       return Response.json({ error: "فایل نسخه پشتیبان یافت نشد" }, { status: 404 });

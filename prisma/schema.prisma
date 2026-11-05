@@ -20,7 +20,15 @@ model User {
   name          String
   company       String?
   password      String
-  role          String         @default("USER") // ADMIN | USER
+  // نسخه SaaS: SUPER_ADMIN (سازنده — بدون مجموعه) | ORG_ADMIN (مدیر مجموعه)
+  //             | SALES_MANAGER | VISITOR
+  // قدیمی: ADMIN | USER — با اسکریپت بک‌فیل M3 به مقادیر جدید نگاشت می‌شود
+  // (پیش‌فرض قدیمی "USER" عمداً حفظ شده تا ALTER بازساز جدول لازم نداشته باشد؛ کد همیشه نقش را صریح تعیین می‌کند)
+  role          String         @default("USER")
+  // مجموعه تعلق — بدون FK سطح دیتابیس (جلوگیری از بازسازی جدول در SQLite)؛
+  // یکپارچگی در سطح برنامه: فقط از ctx نشست نوشته می‌شود و هیچ مسیر حذف Org وجود ندارد
+  orgId         String?
+  // قدیمی: kind = STAFF | PUBLIC (کاربر عمومی با ترِیال شخصی) — برای حساب‌های قدیمی حفظ شد
   // نوع حساب — STAFF: پرسنل تعریف‌شده توسط مدیر (معاف از قفل پایان ترِیال عمومی)
   //               PUBLIC: کاربر عمومیِ ثبت‌نام‌شده (دارای ترِیال شخصی ۲۴ ساعته)
   kind          String         @default("STAFF")
@@ -64,6 +72,7 @@ model AccessGrant {
 
 model Customer {
   id         String    @id @default(cuid())
+  orgId      String? // مجموعه مالک — چندمجموعه‌ای (بدون FK — یکپارچگی سمت برنامه)
   name       String
   company    String?
   phone      String
@@ -81,18 +90,23 @@ model Customer {
   payments   Payment[]
 
   @@index([archived])
+  @@index([orgId, archived])
 }
 
 model ProductGroup {
   id        String    @id @default(cuid())
+  orgId     String? // مجموعه مالک — چندمجموعه‌ای (بدون FK — یکپارچگی سمت برنامه)
   name      String
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   products  Product[]
+
+  @@index([orgId])
 }
 
 model Product {
   id            String       @id @default(cuid())
+  orgId         String? // مجموعه مالک — چندمجموعه‌ای (بدون FK — یکپارچگی سمت برنامه)
   groupId       String
   group         ProductGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   name          String
@@ -109,10 +123,19 @@ model Product {
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
   orderItems    OrderItem[]
+
+  @@index([orgId])
 }
 
 model Order {
   id              String      @id @default(cuid())
+  orgId           String? // مجموعه مالک — چندمجموعه‌ای (بدون FK — یکپارچگی سمت برنامه)
+  // همگام‌سازی چنددستگاهی — ضد ثبت تکراری: شناسه یکتای سمت کلاینت (UUID)
+  clientRef       String?     @unique
+  deviceId        String? // شناسه دستگاه ثبت‌کننده (هدر X-Vizito-Device)
+  createdOffline  Boolean     @default(false) // ثبت‌شده در حالت آفلاین
+  syncedAt        DateTime? // لحظه تأیید سرور برای سفارش آفلاین
+  needsReview     Boolean     @default(false) // تعارض قیمت با کاتالوگ فعلی — برای بررسی مدیر
   customerId      String
   // ممیزی v1.0.10 — Restrict: حذف مشتریِ دارای سفارش در سطح دیتابیس هم ممنوع است؛
   // حتی در رقابت هم‌زمان (حذف + ثبت سفارش) هیچ سفارشی آبشاری حذف نمی‌شود
@@ -130,11 +153,14 @@ model Order {
   updatedAt       DateTime    @updatedAt
   items           OrderItem[]
   payments        Payment[]
+
+  @@index([orgId, createdAt])
 }
 
 // ثبت تسویه حساب مشتری — نقد / چک پای‌بار / رسید
 model Payment {
   id              String    @id @default(cuid())
+  orgId           String? // مجموعه مالک — چندمجموعه‌ای (بدون FK — یکپارچگی سمت برنامه)
   customerId      String
   // ممیزی v1.0.10 — Restrict: سوابق مالی (پرداخت‌ها) هرگز با حذف مشتری از بین نمی‌روند
   customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -154,6 +180,8 @@ model Payment {
   createdByUserId String?
   createdByUser   User?     @relation(fields: [createdByUserId], references: [id])
   createdAt       DateTime  @default(now())
+
+  @@index([orgId, createdAt])
 }
 
 model OrderItem {
@@ -268,6 +296,7 @@ model LicenseCharge {
 // نسخه‌های پشتیبان — فقط مدیر (فایل JSON خارج از پوشه عمومی + متادیتا در دیتابیس)
 model Backup {
   id            String   @id @default(cuid())
+  orgId         String? // null = بکاپ کامل سرور (سازنده/زمان‌بند)؛ مقدار = بکاپ مجموعه
   kind          String   @default("MANUAL") // MANUAL | DAILY | WEEKLY | MONTHLY
   fileName      String   @unique // نام فایل سمت سرور تولید می‌شود — هرگز از ورودی کاربر
   sizeBytes     Int      @default(0)
@@ -275,4 +304,121 @@ model Backup {
   createdBy     String? // فقط برای نسخه‌های دستی — شناسه مدیر
   createdByName String?
   createdAt     DateTime @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+// ══════════ چندمجموعه‌ای (SaaS v2.0) — جداول جدید ══════════
+
+// مجموعه (Tenancy) — هر ثبت‌نام آزاد = یک مجموعه مستقل با تریال ۲۴ساعته سمت سرور
+model Org {
+  id            String    @id @default(cuid())
+  name          String
+  logo          String? // data URL — فاز تنظیمات مجموعه
+  inviteCode    String? // کد دعوت اختصاصی مجموعه — فاز تنظیمات مجموعه
+  status        String    @default("ACTIVE") // ACTIVE | SUSPENDED (تعلیق توسط سازنده)
+  suspendedAt   DateTime?
+  // تریال ۲۴ساعته — فقط سمت سرور و فقط یک‌بار نوشته می‌شود (ضد تمدید)
+  trialStartsAt DateTime?
+  trialEndsAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  license        License?
+  licenseEvents  LicenseEvent[]
+  supportThreads SupportThread[]
+  devices        Device[]
+}
+
+// لایسنس مستقل هر مجموعه — مدت‌های ۳۰/۹۰/۱۸۰/۳۶۵ روز + دائمی + تعلیق/فعال‌سازی مجدد
+model License {
+  id             String    @id @default(cuid())
+  orgId          String    @unique
+  org            Org       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  plan           String    @default("D30") // D30 | D90 | D180 | D365 | PERM
+  startsAt       DateTime  @default(now())
+  expiresAt      DateTime? // null فقط برای PERM (دائمی)
+  status         String    @default("ACTIVE") // ACTIVE | SUSPENDED
+  source         String    @default("KEY") // KEY (کلید امضاشده) | ADMIN (صدور مستقیم سازنده) | MIGRATION
+  currentKeyHash String? // SHA-256 کلید فعال — ضد استفاده مجدد همان کلید برای مجموعه دیگر
+  note           String?
+  maxUsers       Int? // آماده‌سازی آینده — اجرا نمی‌شود (طبق سند تا تأیید کارفرما)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  events         LicenseEvent[]
+}
+
+// تاریخچه صدور/فعال‌سازی/تمدید/تعلیق لایسنس — سوابق قابل نمایش برای سازنده
+model LicenseEvent {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  license   License? @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+  licenseId String?
+  type      String // ISSUE | ACTIVATE | EXTEND | SUSPEND | RESUME | MIGRATION
+  plan      String?
+  days      Int? // برای EXTEND
+  actorName String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+// پشتیبانی داخلی — رشته پیام مجموعه با سازنده (دومسیره، وضعیت‌دار)
+model SupportThread {
+  id              String   @id @default(cuid())
+  orgId           String
+  org             Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subjectType     String   @default("GENERAL") // GENERAL | BUY_LICENSE | RENEW
+  status          String   @default("OPEN") // OPEN | ANSWERED | CLOSED
+  unreadForOrg    Boolean  @default(false)
+  unreadForVendor Boolean  @default(true)
+  lastMessageAt   DateTime @default(now())
+  createdAt       DateTime @default(now())
+  messages        SupportMessage[]
+
+  @@index([orgId, lastMessageAt])
+  @@index([unreadForVendor, lastMessageAt])
+}
+
+// پیام پشتیبانی — clientRef برای ارسال آفلاین ضدرکورد تکراری
+model SupportMessage {
+  id         String        @id @default(cuid())
+  threadId   String
+  thread     SupportThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderSide String // ORG | VENDOR
+  senderName String
+  body       String
+  clientRef  String?
+  createdAt  DateTime      @default(now())
+
+  @@unique([threadId, clientRef])
+}
+
+// هویت دستگاه‌های مجموعه (هر دستگاه UUID محلی خودش را می‌فرستد)
+model Device {
+  id         String   @id @default(cuid())
+  orgId      String
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  deviceKey  String   @unique // UUID سمت کلاینت
+  label      String?
+  userId     String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+}
+
+// لاگ دسترسی مدیر کل به داده مجموعه‌ها — حسابرسی الزام بخش پنجم سند
+model AdminAccessLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  actorName String?
+  orgId     String? // مجموعه مورد مشاهده
+  action    String // VIEW_ORG | VIEW_USERS | VIEW_ORDERS | ISSUE_LICENSE | ...
+  detail    String? // JSON بدون داده حساس
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([actorId, createdAt])
 }

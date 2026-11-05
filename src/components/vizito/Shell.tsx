@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -11,6 +12,7 @@ import { useApp, type ViewKey } from "@/lib/store";
 import { formatJalaliLong, expiryLabel, toFa } from "@/lib/jalali";
 import { SECTIONS } from "@/lib/sections";
 import { api } from "@/lib/api";
+import { logoutAndClearLocal } from "@/components/vizito/VizitoApp";
 import {
   LayoutDashboard,
   Users,
@@ -30,6 +32,9 @@ import {
   Gem,
   Mail,
   Megaphone,
+  ShieldCheck,
+  LifeBuoy,
+  CloudOff,
 } from "lucide-react";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -44,7 +49,16 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme();
-  const { view, setView, me, menuOpen, setMenuOpen, setMe } = useApp();
+  const { view, setView, me, menuOpen, setMenuOpen, setMe, online, pendingOrders } = useApp();
+  const [supportUnread, setSupportUnread] = useState(0);
+
+  // نشان نخواندهٔ پشتیبانی — فقط کاربران مجموعه‌دار؛ بدون polling (در بازشدن منو)
+  useEffect(() => {
+    if (!menuOpen || !me?.orgName) return;
+    api<{ unread: number }>("/api/support/threads")
+      .then((r) => setSupportUnread(r.unread || 0))
+      .catch(() => {});
+  }, [menuOpen, me?.orgName]);
 
   const available = SECTIONS.filter((s) => {
     if (s.key === "users") return me?.isAdmin;
@@ -64,10 +78,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت — بدون توکن در JS
+    // حریم خصوصی آفلاین (بخش ۱۰ سند): اسنپ‌شات و صف‌های محلی مجموعه هم کامل پاک می‌شود
     api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    setMe(null);
-    setMenuOpen(false);
-    setView("dashboard");
+    void logoutAndClearLocal().finally(() => {
+      setMe(null);
+      setMenuOpen(false);
+      setView("dashboard");
+    });
   };
 
   return (
@@ -127,6 +144,31 @@ export function Shell({ children }: { children: React.ReactNode }) {
                       پیام‌ها
                     </button>
                   )}
+                  {/* پشتیبانی داخلی — کاربران مجموعه‌دار (حتی در قفل لایسنس در دسترس است) */}
+                  {me?.orgName && (
+                    <button
+                      onClick={() => navigate("support")}
+                      className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                        view === "support" ? "bg-accent text-accent-foreground font-semibold" : "hover:bg-accent/60"
+                      }`}
+                    >
+                      <span className="relative">
+                        <LifeBuoy className="h-4 w-4 text-primary" />
+                        {supportUnread > 0 && (
+                          <span
+                            className="absolute -top-1 -left-1 h-2 w-2 rounded-full bg-rose-500"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </span>
+                      پشتیبانی
+                      {supportUnread > 0 && (
+                        <Badge className="text-[9px] bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border-0 mr-auto">
+                          {toFa(supportUnread)} جدید
+                        </Badge>
+                      )}
+                    </button>
+                  )}
                   {/* پشتیبان‌گیری — فقط مدیر */}
                   {me?.isAdmin && (
                     <button
@@ -149,6 +191,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     >
                       <Gem className="h-4 w-4 text-primary" />
                       فروش لایسنس
+                    </button>
+                  )}
+                  {/* پنل مدیریت کل — فقط سازنده برنامه (SUPER_ADMIN) */}
+                  {(me?.isOwner || me?.role === "SUPER_ADMIN") && (
+                    <button
+                      onClick={() => navigate("super-admin")}
+                      className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                        view === "super-admin" ? "bg-accent text-accent-foreground font-semibold" : "hover:bg-accent/60"
+                      }`}
+                    >
+                      <ShieldCheck className="h-4 w-4 text-primary" />
+                      مدیریت کل
                     </button>
                   )}
                   {/* پیام‌ها و اطلاع‌رسانی — فقط سازنده برنامه (مالک اصلی) */}
@@ -216,6 +270,27 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
+      {/* بنر حالت آفلاین — بخش ۵.۲ سند: نمایش + سفارش‌گیری؛ عملیات مدیریتی قفل */}
+      {!online && (
+        <div
+          role="status"
+          className="sticky top-14 z-30 bg-amber-100/95 dark:bg-amber-950/90 border-b border-amber-300/60 dark:border-amber-800/60 text-amber-900 dark:text-amber-200"
+        >
+          <div className="max-w-3xl mx-auto px-3 py-1.5 flex items-center gap-2 text-[11px]">
+            <CloudOff className="h-3.5 w-3.5 shrink-0" />
+            <span className="font-semibold">حالت آفلاین</span>
+            <span className="opacity-80 truncate">
+              داده‌های آخرین همگام‌سازی نمایش داده می‌شود؛ سفارش‌ها پس از اتصال ثبت می‌شوند
+            </span>
+            {pendingOrders > 0 && (
+              <Badge className="shrink-0 text-[9px] bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-100 border-0">
+                {toFa(pendingOrders)} سفارش در انتظار
+              </Badge>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* محتوا */}
       <main className="flex-1 max-w-3xl w-full mx-auto px-3 pt-4 pb-28">{children}</main>
 
@@ -224,16 +299,27 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="max-w-3xl mx-auto grid grid-cols-5">
           {bottomItems.map((item) => {
             const active = view === item.key;
+            const showPending = item.key === "orders" && pendingOrders > 0;
             return (
               <button
                 key={item.key}
                 onClick={() => navigate(item.key)}
-                className={`flex flex-col items-center gap-0.5 py-2 text-[10px] transition-colors ${
+                className={`relative flex flex-col items-center gap-0.5 py-2 text-[10px] transition-colors ${
                   active ? "text-primary font-bold" : "text-muted-foreground hover:text-foreground"
                 }`}
-                aria-label={item.label}
+                aria-label={showPending ? `${item.label} — ${toFa(pendingOrders)} سفارش در انتظار همگام‌سازی` : item.label}
               >
-                <item.icon className={`h-5 w-5 ${active ? "stroke-[2.4]" : ""}`} />
+                <span className="relative">
+                  <item.icon className={`h-5 w-5 ${active ? "stroke-[2.4]" : ""}`} />
+                  {showPending && (
+                    <span
+                      className="absolute -top-1 -left-1.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-amber-500 text-white text-[8px] font-bold flex items-center justify-center"
+                      aria-hidden="true"
+                    >
+                      {toFa(pendingOrders)}
+                    </span>
+                  )}
+                </span>
                 {item.label}
               </button>
             );

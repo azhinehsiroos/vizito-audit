@@ -58,12 +58,20 @@ export async function POST(req: NextRequest) {
       .map((s) => s.trim())
       .filter(Boolean);
     await db.$transaction([
+      db.adminAccessLog.deleteMany({}), // چندمجموعه‌ای — لاگ حسابرسی هم با پاک‌سازی کامل می‌رود
+      db.supportMessage.deleteMany({}),
+      db.supportThread.deleteMany({}),
+      db.device.deleteMany({}),
+      db.licenseEvent.deleteMany({}),
+      db.license.deleteMany({}),
       db.orderItem.deleteMany({}),
       db.payment.deleteMany({}), // پرداخت‌ها به Order ارجاع دارند — قبل از سفارش‌ها
       db.order.deleteMany({}),
       db.product.deleteMany({}),
       db.productGroup.deleteMany({}),
       db.customer.deleteMany({}),
+      // چندمجموعه‌ای — مجموعه‌ها آخر (پس از خالی شدن همه وابستگی‌ها)
+      db.org.deleteMany({}),
       db.accessGrant.deleteMany({}),
       db.messageRecipient.deleteMany({}), // ممیزی v1.1.2 — بدون این، پیام‌های ارسالی بی‌دلیل در DB می‌ماندند
       db.message.deleteMany({}),

@@ -8,9 +8,15 @@ export async function GET(req: NextRequest) {
   const ctx = await getAuth(req);
   if (!ctx) return unauthorized();
   // سازنده برنامه — فقط برای نمایش بخش «فروش لایسنس» در منو
-  // licenseLocked: آیا «این کاربر» با قفل لایسنس مواجه است؟ (مالک/پرسنل معاف از قفل ترِیال)
+  // licenseLocked: آیا «این کاربر» با قفل لایسنس مواجه است؟ (سازنده همیشه آزاد؛ بقیه تابع وضعیت مجموعه)
   const licenseLocked = await isUserLicenseLocked(ctx);
-  return Response.json({ ...ctx, isOwner: ctx.isAdmin && isOwnerMobile(ctx.user.mobile), licenseLocked });
+  return Response.json({
+    ...ctx,
+    isOwner: ctx.isAdmin && isOwnerMobile(ctx.user.mobile),
+    licenseLocked,
+    // چندمجموعه‌ای: نام مجموعه برای نمایش در UI
+    orgName: ctx.org ? ctx.org.name : null,
+  });
 }
 
 /** ویرایش پروفایل خود کاربر (نام / نام شرکت) — هر کاربر فقط پروفایل خودش */
