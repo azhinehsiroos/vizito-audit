@@ -441,6 +441,14 @@ function isInternalHostname(hostname: string): boolean {
   return false;
 }
 
+/**
+ * بخش‌های «داده تجاری سازمانی» — M1 (اصلاح فاز B):
+ * مسیرهایی که با این sectionها گارد می‌شوند داده‌ی متعلق به یک مجموعه را
+ * می‌خوانند/می‌نویسند؛ حساب SUPER_ADMIN (بدون مجموعه) باید فقط از /api/sa/*
+ * (با حسابرسی الزامی) به آن‌ها برسد.
+ */
+const TENANT_DATA_SECTIONS = new Set(["customers", "products", "orders", "reports", "users", "catalogs"]);
+
 /** احراز هویت + بررسی دسترسی به یک بخش (مدیر همیشه مجاز) + قفل لایسنس (402) */
 export async function requireAuth(
   req: NextRequest,
@@ -484,6 +492,14 @@ export async function requireAuth(
         if (!personalTrialActive) return { error: orgLockedResponseDetailed(ctx.org.id, lock) };
       }
     }
+  }
+  // ── M1 (اصلاح فاز B): داده تجاری سازمانی از مسیرهای عادی برای حساب سازنده
+  // (SUPER_ADMIN بدون مجموعه) باز نیست — ۴۰۳ عمومی. دسترسی مدیریتی به داده
+  // مجموعه‌ها فقط از مسیرهای audited‌ِ /api/sa/* انجام می‌شود تا هیچ مشاهده/تغییری
+  // بدون ثبت حسابرسی ممکن نباشد. حساب‌های legacy بدون مجموعه (غیرِ سازنده)
+  // همان رفتار نصبی v1.1.4 را دارند (داده‌های orgId=null خودشان).
+  if (section && TENANT_DATA_SECTIONS.has(section) && ctx.isSuperAdmin) {
+    return { error: forbidden("این بخش فقط برای کاربران مجموعه‌های ثبت‌شده فعال است") };
   }
   if (section && !ctx.isAdmin && !ctx.sections.includes(section)) {
     return { error: forbidden(`دسترسی به بخش «${section}» برای شما فعال نیست یا منقضی شده است`) };

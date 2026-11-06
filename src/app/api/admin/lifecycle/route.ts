@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, forbidden } from "@/lib/auth";
-import { isOwnerMobile } from "@/lib/license";
+import { requireAuth } from "@/lib/auth";
+import { requireOwnerContext, logSaAccess } from "@/lib/sa";
 import {
   lifecycleState,
   runDataRetentionSweep,
@@ -16,41 +16,48 @@ import {
  *   - sweep: اجرای حذف کنترل‌شده (فقط اگر فاز SWEEP_DUE باشد و متوقف نشده باشد)
  *   - pause / resume: توقف یا ادامه حذف خودکار
  */
-function guardOwner(mobile: string, isAdmin: boolean): Response | null {
-  if (!isAdmin || !isOwnerMobile(mobile)) {
-    return forbidden("این بخش فقط برای سازنده برنامه فعال است");
-  }
-  return null;
-}
+// M9: گارد یکپارچه مالک — منبع واحد در sa.ts
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
-  const st = await lifecycleState();
-  const pausedRow = await db.setting.findUnique({ where: { key: RETENTION_PAUSED_KEY } });
-  return Response.json({ ...st, pausedBySetting: pausedRow?.value === "1" });
+  try {
+    const st = await lifecycleState();
+    const pausedRow = await db.setting.findUnique({ where: { key: RETENTION_PAUSED_KEY } });
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_LIFECYCLE", req, `phase=${st.phase}`);
+    return Response.json({ ...st, pausedBySetting: pausedRow?.value === "1" });
+  } catch (e) {
+    console.error("lifecycle get error", e);
+    return Response.json({ error: "خطا در وضعیت چرخه حیات" }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
   try {
     const body = (await req.json().catch(() => ({}))) as { action?: string };
     switch (body.action) {
       case "sweep": {
+        // M3: ثبت حسابرسی «قبل از اجرا» (fail-closed) — sweep چندنوشتی داخلی است
+        // و تراکنشی‌کردن آن با AdminAccessLog ممکن نیست؛ اجرای حذف هرگز بدون ثبت انجام نمی‌شود
+        await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "RETENTION_SWEEP", req, "owner-manual");
         const result = await runDataRetentionSweep("owner-manual");
         return Response.json({ ok: true, ...result });
       }
       case "pause": {
+        // M3: حسابرسی توقف/ادامه حذف — قبلاً actor دور ریخته می‌شد
         await setRetentionPaused(true, { id: auth.ctx.user.id, name: auth.ctx.user.name });
+        await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "RETENTION_PAUSE", req);
         return Response.json({ ok: true, paused: true });
       }
       case "resume": {
         await setRetentionPaused(false, { id: auth.ctx.user.id, name: auth.ctx.user.name });
+        await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "RETENTION_RESUME", req);
         return Response.json({ ok: true, paused: false });
       }
       default:

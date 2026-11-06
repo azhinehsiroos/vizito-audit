@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, forbidden } from "@/lib/auth";
-import { isOwnerMobile, makeLicenseKey } from "@/lib/license";
+import { requireAuth } from "@/lib/auth";
+import { requireOwnerContext, adminAccessLogData, logSaAccess } from "@/lib/sa";
+import { makeLicenseKey } from "@/lib/license";
 import { strField, strOrNull } from "@/lib/validate";
 
 const DURATIONS = [
@@ -16,22 +17,20 @@ function labelFor(days: number): string {
   return DURATIONS.find((d) => d.days === days)?.label || `${days} روزه`;
 }
 
-function guardOwner(ctxMobile: string, isAdmin: boolean): Response | null {
-  if (!isAdmin || !isOwnerMobile(ctxMobile)) {
-    return forbidden("این بخش فقط برای سازنده برنامه فعال است");
-  }
-  return null;
-}
+// M9: گارد یکپارچه مالک — نقش SUPER_ADMIN یا موبایل سازنده (منبع واحد در sa.ts)
 
 /** دفتر فروش لایسنس — فقط سازنده برنامه */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
-  const sales = await db.licenseSale.findMany({ orderBy: { createdAt: "desc" }, take: 200 });
-  const now = Date.now();
-  return Response.json({
+  try {
+    const sales = await db.licenseSale.findMany({ orderBy: { createdAt: "desc" }, take: 200 });
+    // M3: مشاهده دفتر فروش — حسابرسی fail-closed
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_LICENSE_SALES", req, `count=${sales.length}`);
+    const now = Date.now();
+    return Response.json({
     sales: sales.map((s) => {
       // لایسنس دائمی (durationDays = 0) — بدون انقضا، خارج از چرخه مهلت/حذف
       if (s.durationDays === 0) {
@@ -47,13 +46,17 @@ export async function GET(req: NextRequest) {
       };
     }),
   });
+  } catch (e) {
+    console.error("license sales list error", e);
+    return Response.json({ error: "خطا در دریافت دفتر فروش" }, { status: 500 });
+  }
 }
 
 /** صدور لایسنس جدید برای خریدار — فقط سازنده برنامه */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -91,8 +94,15 @@ export async function POST(req: NextRequest) {
       );
     }
     const expiresAt = isPermanent ? null : new Date(Date.now() + durationDays * 86_400_000);
-    const sale = await db.licenseSale.create({
-      data: { buyerName, buyerMobile, durationDays, durationLabel: labelFor(durationDays), key, price, note, expiresAt },
+    // M3: صدور فروش لایسنس — ثبت دفتر + حسابرسی در یک تراکنش (fail-closed)
+    const sale = await db.$transaction(async (tx) => {
+      const created = await tx.licenseSale.create({
+        data: { buyerName, buyerMobile, durationDays, durationLabel: labelFor(durationDays), key, price, note, expiresAt },
+      });
+      await tx.adminAccessLog.create({
+        data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, null, "LICENSE_SALE_ISSUE", req, `${durationDays}d`),
+      });
+      return created;
     });
     return Response.json(
       {

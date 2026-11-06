@@ -443,8 +443,8 @@ export function SettingsView() {
         </Card>
       )}
 
-      {/* امنیت و ثبت‌نام — فقط مدیر */}
-      {me?.isAdmin && (
+      {/* امنیت و ثبت‌نام — فقط سازنده (M8: کد دعوت منبع vendor است) */}
+      {me?.isAdmin && !!inviteCode && (
         <Card>
           <CardContent className="p-3 space-y-2">
             <div className="text-xs font-bold flex items-center gap-1.5">

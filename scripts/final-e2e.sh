@@ -35,6 +35,7 @@ ADMIN_MOBILE="0913$(shuf -i 1000000-9999999 -n 1)"
 STAFF_MOBILE="0914$(shuf -i 1000000-9999999 -n 1)"
 STAFF2_MOBILE="0916$(shuf -i 1000000-9999999 -n 1)"
 PUBLIC_MOBILE="0915$(shuf -i 1000000-9999999 -n 1)"
+PUBLIC2_MOBILE="0917$(shuf -i 1000000-9999999 -n 1)"
 PASSWORD="E2e-$(openssl rand -hex 6)-!a1"
 
 openssl genpkey -algorithm ED25519 -out "$TMP/lic.pem" 2>/dev/null
@@ -137,11 +138,11 @@ check "SETUP_TOKEN پس از اولین ثبت‌نام مدیر نمی‌ساز
 check "حساب سوءاستفاده‌کننده مجموعه مستقل گرفت" "True" "$(jget "$R" "bool(d.get('orgId')) and d.get('orgId') != '$ADMIN_ORG'")"
 check "حساب سوءاستفاده‌کننده با همان شماره ساخته شد (ثبت‌نام آزاد)" "$EXPL_MOBILE" "$(jget "$R" "d['user']['mobile']")"
 
-echo "== ۲) ثبت‌نام آزاد با کد دعوت → مجموعه مستقل با تریال (SaaS) =="
-rq 3100 admin POST /api/settings/invite '{}' >/dev/null
-INVITE=$(jget "$(rq 3100 admin GET /api/settings)" "d['inviteCode']")
-R=$(rq 3100 none POST /api/auth/register "{\"mobile\":\"$PUBLIC_MOBILE\",\"name\":\"مدیر مجموعه دوم\",\"company\":\"مجموعه دوم\",\"password\":\"$PASSWORD\",\"inviteCode\":\"$INVITE\"}")
-check "ثبت‌نام آزاد با کد دعوت → ORG_ADMIN" "ORG_ADMIN" "$(jget "$R" "d['user']['role']")"
+echo "== ۲) ثبت‌نام آزاد → مجموعه مستقل با تریال (SaaS — M8: کد دعوت دیگر از مدیر مجموعه ساخته نمی‌شود) =="
+C=$(code 3100 admin POST /api/settings/invite "{}")
+check "M8: ساخت کد دعوت توسط مدیر مجموعه رد (403)" "403" "$C"
+R=$(rq 3100 none POST /api/auth/register "{\"mobile\":\"$PUBLIC_MOBILE\",\"name\":\"مدیر مجموعه دوم\",\"company\":\"مجموعه دوم\",\"password\":\"$PASSWORD\"}")
+check "ثبت‌نام آزاد بدون کد (M8: مدیر مجموعه کد نمی‌سازد) → ORG_ADMIN" "ORG_ADMIN" "$(jget "$R" "d['user']['role']")"
 rq 3100 public POST /api/auth/login "{\"mobile\":\"$PUBLIC_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 R=$(rq 3100 public GET /api/auth/me)
 check "kind=STAFF" "STAFF" "$(jget "$R" "d['user']['kind']")"
@@ -157,8 +158,7 @@ check "ثبت‌نام آزاد بدون کد دعوت/توکن → ORG_ADMIN" "
 WRONGI_MOBILE="0936$(shuf -i 1000000-9999999 -n 1)"
 C=$(XFF_REG 3100 198.51.100.22 "{\"mobile\":\"$WRONGI_MOBILE\",\"name\":\"کد دعوت غلط\",\"password\":\"$PASSWORD\",\"inviteCode\":\"wrong-invite-xyz\"}")
 contains "کد دعوت نادرست رد شد (403)" "کد دعوت واردشده نادرست است" "$C"
-R=$(XFF_REG 3100 198.51.100.23 "{\"mobile\":\"$WRONGI_MOBILE\",\"name\":\"کد دعوت درست\",\"password\":\"$PASSWORD\",\"inviteCode\":\"$INVITE\"}")
-check "ثبت‌نام با کد دعوت درست همچنان کار می‌کند → ORG_ADMIN" "ORG_ADMIN" "$(jget "$R" "d['user']['role']")"
+# مسیر خوش «کد دعوت معتبر» روی سرور B با سازنده پوشش داده می‌شود (بخش ۱۱ — M8)
 
 echo "== ۳) پرسنل با گرنت دائمی =="
 R=$(rq 3100 admin POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل فروش\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"orders\",\"dashboard\"],\"durationHours\":null}")
@@ -482,20 +482,24 @@ contains "ثبت‌نام مالک بدون OWNER_SETUP_KEY رد شد (403)" "OW
 R=$(XFF_REG 3101 198.51.100.22 "{\"mobile\":\"$OWNER2_MOBILE\",\"name\":\"کلید سازنده غلط\",\"password\":\"$PASSWORD\",\"setupKey\":\"wrong-owner-key-xyz\"}")
 contains "ثبت‌نام مالک با کلید نادرست رد شد (403)" "OWNER_KEY_REQUIRED" "$R"
 
-echo "== ۱۱) مالک + پرسنل =="
+echo "== ۱۱) مالک + M1/M8 =="
 R=$(rq 3101 none POST /api/auth/register "{\"mobile\":\"$OWNER_MOBILE\",\"name\":\"مالک برنامه\",\"password\":\"$PASSWORD\",\"setupKey\":\"$OWNER_SETUP_KEY\"}")
 check "ثبت‌نام مالک → SUPER_ADMIN" "SUPER_ADMIN" "$(jget "$R" "d['user']['role']")"
 check "سازنده بدون مجموعه است (orgId=null)" "None" "$(jget "$R" "d.get('orgId')")"
 rq 3101 owner POST /api/auth/login "{\"mobile\":\"$OWNER_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 R=$(rq 3101 owner GET /api/auth/me)
 check "isOwner" "True" "$(jget "$R" "d['isOwner']")"
-R=$(rq 3101 owner POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل B\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"dashboard\"],\"durationHours\":null}")
-contains "ساخت پرسنل توسط مالک" '"id"' "$R"
-rq 3101 staff POST /api/auth/login "{\"mobile\":\"$STAFF_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+# M1: سازنده دیگر از مسیر عادی کاربران، پرسنل نمی‌سازد (تنها راه دید داده: /api/sa/* با حسابرسی)
+C=$(code 3101 owner POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل B\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"dashboard\"],\"durationHours\":null}")
+check "M1: ساخت پرسنل توسط سازنده از مسیر عادی رد (403)" "403" "$C"
+# M8: چرخه کد دعوت — فقط سازنده؛ ثبت‌نام با کد معتبر همچنان کار می‌کند
 rq 3101 owner POST /api/settings/invite '{}' >/dev/null
 INVITE=$(jget "$(rq 3101 owner GET /api/settings)" "d['inviteCode']")
 rq 3101 none POST /api/auth/register "{\"mobile\":\"$PUBLIC_MOBILE\",\"name\":\"کاربر عمومی B\",\"password\":\"$PASSWORD\",\"inviteCode\":\"$INVITE\"}" >/dev/null
 rq 3101 public POST /api/auth/login "{\"mobile\":\"$PUBLIC_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+# کاربر دوم غیرسازنده — برای تست خواندن متقابل پیام (۴۰۳) و رد عملیات مدیریتی
+rq 3101 none POST /api/auth/register "{\"mobile\":\"$PUBLIC2_MOBILE\",\"name\":\"کاربر عمومی B2\",\"password\":\"$PASSWORD\"}" >/dev/null
+rq 3101 public2 POST /api/auth/login "{\"mobile\":\"$PUBLIC2_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 
 echo "== ۱۲) دفتر فروش: صدور مدت‌دار/دائمی + شارژ + توقف حذف =="
 INSTALL_B=$(jget "$(curl -s http://127.0.0.1:3101/api/license/status)" "d['installId']")
@@ -516,7 +520,7 @@ C=$(code 3101 owner PATCH "/api/license/sales/$SALE1" '{"pauseDeletion":true}')
 check "توقف حذف خودکار روی فروش" "200" "$C"
 R=$(rq 3101 owner GET /api/license/sales)
 check "پرچم توقف حذف ثبت شد" "True" "$(jget "$R" "[s.get('pauseDeletion') for s in d['sales'] if s['id']=='$SALE1'][0]")"
-C=$(code 3101 staff POST /api/license/sales "{\"buyerName\":\"x\",\"buyerMobile\":\"09120000001\",\"durationDays\":30,\"installId\":\"$INSTALL_B\"}")
+C=$(code 3101 public2 POST /api/license/sales "{\"buyerName\":\"x\",\"buyerMobile\":\"09120000001\",\"durationDays\":30,\"installId\":\"$INSTALL_B\"}")
 check "غیرمالک نمی‌تواند لایسنس صادر کند (403)" "403" "$C"
 
 echo "== ۱۳) پیام‌ها و اطلاع‌رسانی =="
@@ -525,21 +529,21 @@ CNT=$(jget "$R" "d.get('recipientCount') or 0")
 check "ارسال به همه (${CNT} گیرنده ≥ ۲)" "True" "$( [ "${CNT:-0}" -ge 2 ] && echo True || echo False )"
 R=$(rq 3101 owner POST /api/admin/messages "{\"audience\":\"SALE_EXPIRED\",\"title\":\"تمدید کنید\",\"body\":\"لایسنس شما منقضی شده\"}")
 check "مخاطب «لایسنس منقضی» پذیرفته شد یا بدون گیرنده اعلام شد" "True" "$(jget "$R" "('recipientCount' in d) or ('error' in d)")"
-R=$(rq 3101 staff GET /api/messages)
-check "پرسنل پیام گرفت (خوانده‌نشده)" "True" "$(jget "$R" "d['unread'] >= 1 and len(d['messages'])>=1")"
-STAFF_RID=$(jget "$R" "d['messages'][0]['id']")
-PUB_RID=$(jget "$(rq 3101 public GET /api/messages)" "d['messages'][0]['id']")
-C=$(code 3101 staff POST "/api/messages/$PUB_RID/read")
-check "خواندن پیام دیگری ممنوع (403)" "403" "$C"
-C=$(code 3101 staff POST "/api/messages/$STAFF_RID/read")
+R=$(rq 3101 public GET /api/messages)
+check "کاربر عادی پیام گرفت (خوانده‌نشده)" "True" "$(jget "$R" "d['unread'] >= 1 and len(d['messages'])>=1")"
+PUB_RID=$(jget "$R" "d['messages'][0]['id']")
+P2_RID=$(jget "$(rq 3101 public2 GET /api/messages)" "d['messages'][0]['id']")
+C=$(code 3101 public POST "/api/messages/$P2_RID/read")
+check "خواندن پیام کاربر دیگر ممنوع (403)" "403" "$C"
+C=$(code 3101 public POST "/api/messages/$PUB_RID/read")
 check "خواندن پیام خود" "200" "$C"
 R=$(rq 3101 owner GET /api/admin/messages)
 check "تاریخچه: خوانده‌شدن ثبت شد" "True" "$(jget "$R" "any(m['readCount']>=1 for m in d['messages'])")"
-C=$(code 3101 staff POST /api/admin/messages '{"audience":"ALL","title":"x"}')
+C=$(code 3101 public2 POST /api/admin/messages '{"audience":"ALL","title":"x"}')
 check "غیرمالک ارسال مدیریتی ممنوع (403)" "403" "$C"
 C=$(code 3101 owner DELETE "/api/admin/messages/$(jget "$(rq 3101 owner GET /api/admin/messages)" "d['messages'][0]['id']")")
 check "حذف پیام توسط مالک" "200" "$C"
-R=$(rq 3101 staff GET /api/messages)
+R=$(rq 3101 public GET /api/messages)
 check "پیام حذف‌شده پنهان است" "0" "$(jget "$R" "len([m for m in d['messages'] if m['title']=='خوش آمدید'])")"
 
 echo "== ۱۴) چرخه حیات از دید مالک =="
@@ -549,7 +553,7 @@ R=$(rq 3101 owner POST /api/admin/lifecycle '{"action":"pause"}')
 check "توقف حذف خودکار (کلید سرور)" "True" "$(jget "$R" "d.get('paused')")"
 R=$(rq 3101 owner POST /api/admin/lifecycle '{"action":"resume"}')
 check "ادامه حذف خودکار" "False" "$(jget "$R" "d.get('paused')")"
-C=$(code 3101 staff GET /api/admin/lifecycle)
+C=$(code 3101 public2 GET /api/admin/lifecycle)
 check "غیرمالک به چرخه حیات دسترسی ندارد (403)" "403" "$C"
 
 echo "== ۱۴−) بازسازی مالک = هرگز مالک دوم ساخته نمی‌شود =="
@@ -558,8 +562,13 @@ check "ثبت‌نام مجدد مالک با کلید درست → ارتقای
 rq 3101 owner POST /api/auth/login "{\"mobile\":\"$OWNER_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 R=$(rq 3101 owner GET /api/auth/me)
 check "نشست تازه مالک پس از ارتقا برقرار است (isOwner)" "True" "$(jget "$R" "d['isOwner']")"
-R=$(rq 3101 owner GET /api/users)
-check "فقط یک حساب با شماره مالک وجود دارد (مالک دوم ساخته نشد)" "1" "$(jget "$R" "sum(1 for u in d if u['mobile']=='$OWNER_MOBILE')")"
+# M1: شمارش از DB مستقیم — سازنده به مسیر عادی کاربران دسترسی ندارد
+OWNER_COUNT=$(node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBB');
+console.log(d.prepare('SELECT COUNT(*) AS c FROM User WHERE mobile=?').get('$OWNER_MOBILE').c);
+" 2>/dev/null)
+check "فقط یک حساب با شماره مالک وجود دارد (مالک دوم ساخته نشد)" "1" "$OWNER_COUNT"
 
 echo "== ۱۴٫۵) لایسنس مستقل مجموعه — VZT3 + صدور/تمدید/تعلیق (SaaS) =="
 ORGT_MOBILE="0939$(shuf -i 1000000-9999999 -n 1)"
@@ -698,8 +707,8 @@ C=$(code 3101 orgh GET "/api/sa/orgs")
 check "مدیر مجموعه به پنل مدیریت کل دسترسی ندارد (403)" "403" "$C"
 C=$(code 3101 orgh GET "/api/sa/orgs?orgId=$ORGT_ID&tab=users")
 check "مدیر مجموعه به جزئیات SA دسترسی ندارد (403)" "403" "$C"
-C=$(code 3101 staff GET "/api/sa/orgs?orgId=$ORGT_ID&tab=reports")
-check "ویزیتور به پنل SA دسترسی ندارد (403)" "403" "$C"
+C=$(code 3101 public2 GET "/api/sa/orgs?orgId=$ORGT_ID&tab=reports")
+check "کاربر عادی به پنل SA دسترسی ندارد (403)" "403" "$C"
 C=$(code 3101 anon GET "/api/sa/orgs")
 check "بدون نشست → ۴۰۱" "401" "$C"
 # لاگ دسترسی
@@ -1040,6 +1049,37 @@ if(!r){console.log('missing')}else{console.log((r.pid===null?'1':'0')+'|'+(Math.
 " 2>/dev/null)
 check "H3: productId=NULL + سقف قیمت دستی (۱ میلیارد) اعمال شد" "1|1" "$H3B_CHECK"
 
+# ── فاز B (اصلاح ممیزی): M1 بستن مسیر عادی برای سازنده + M8 کد دعوت + M3 حسابرسی ──
+C=$(code 3101 owner GET /api/customers)
+check "M1: سازنده از مسیر عادی مشتریان مسدود (403)" "403" "$C"
+C=$(code 3101 owner GET /api/users)
+check "M1: سازنده از مسیر عادی کاربران مسدود (403)" "403" "$C"
+C=$(code 3101 owner GET /api/reports/summary)
+check "M1: سازنده از مسیر عادی گزارش مسدود (403)" "403" "$C"
+C=$(code 3101 owner POST /api/orders "{}")
+check "M1: سازنده از مسیر عادی ثبت سفارش مسدود (403)" "403" "$C"
+C=$(code 3101 orgh GET /api/customers)
+check "M1: مدیر مجموعه همچنان به داده خودش می‌رسد (200)" "200" "$C"
+C=$(code 3101 orgh GET /api/settings/invite)
+check "M8: کد دعوت برای مدیر مجموعه (403)" "403" "$C"
+R=$(rq 3101 orgh GET /api/settings)
+check "M8: کد دعوت در پاسخ تنظیمات مدیر مجموعه نیست" "True" "$(jget "$R" "('inviteCode' not in d)")"
+C=$(code 3101 owner POST /api/settings/invite "{}")
+check "M8: چرخش کد دعوت توسط سازنده (200)" "200" "$C"
+# M3 — حسابرسی عملیات حساس (همه fail-closed)
+C=$(code 3101 owner POST /api/admin/messages '{"audience":"ALL","title":"اعلان فاز B","body":"متن"}')
+check "M3: ارسال پیام گروهی سازنده (201)" "201" "$C"
+R=$(rq 3101 owner GET "/api/sa/access-logs?action=SEND_MASS_MESSAGE")
+check "M3: حسابرسی SEND_MASS_MESSAGE" "True" "$(jget "$R" "d['total']>=1")"
+R=$(rq 3101 owner GET "/api/sa/access-logs?action=UPDATE_LICENSE_SETTINGS")
+check "M3: حسابرسی UPDATE_LICENSE_SETTINGS" "True" "$(jget "$R" "d['total']>=1")"
+R=$(rq 3101 owner GET "/api/sa/access-logs?action=SUSPEND_ORG")
+check "M2: حسابرسی SUSPEND_ORG (تراکنشی با تعلیق)" "True" "$(jget "$R" "d['total']>=1")"
+C=$(code 3101 owner POST /api/license/sales "{\"buyerName\":\"خریدار فاز B\",\"buyerMobile\":\"09123334445\",\"durationDays\":30,\"installId\":\"inst-b-12345678\"}")
+check "M3: صدور فروش VZT2 توسط سازنده (201)" "201" "$C"
+R=$(rq 3101 owner GET "/api/sa/access-logs?action=LICENSE_SALE_ISSUE")
+check "M3: حسابرسی LICENSE_SALE_ISSUE" "True" "$(jget "$R" "d['total']>=1")"
+
 echo "== ۱۴٫۱۰) بکاپ/بازیابی — Restore دومرحله‌ای (بخش دهم سند طراحی) =="
 # ── آماده‌سازی: پرسنلِ داخل مجموعه — نشستش باید پس از بازیابی باطل شود ──
 ORGSTAFF_MOBILE="0943$(shuf -i 1000000-9999999 -n 1)"
@@ -1239,8 +1279,8 @@ console.log(d.prepare('SELECT COUNT(*) c FROM \"Order\" WHERE clientRef=?').get(
 ")
 check "برخورد: دقیقاً یک ردیف درج شد" "1" "$COLL_N"
 
-echo "== ۱۵) تست‌های امنیتی قبلی (security-e2e.sh روی سرور B) =="
-if BASE_URL="http://127.0.0.1:3101" MOBILE="$OWNER_MOBILE" PASSWORD="$PASSWORD" bash scripts/security-e2e.sh > "$TMP/sec.log" 2>&1; then
+echo "== ۱۵) تست‌های امنیتی قبلی (security-e2e.sh روی سرور B — با مدیر مجموعه؛ M1: سازنده از مسیرهای تجاری مسدود است) =="
+if BASE_URL="http://127.0.0.1:3101" MOBILE="$ORGT_MOBILE" PASSWORD="$PASSWORD" bash scripts/security-e2e.sh > "$TMP/sec.log" 2>&1; then
   SECN=$(grep -c '✅' "$TMP/sec.log" 2>/dev/null); SECN=${SECN:-?}
   ok "security-e2e.sh کامل پاس شد ($SECN چک)"
 else

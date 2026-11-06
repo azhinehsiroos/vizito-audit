@@ -260,10 +260,8 @@ say "  (دورها: $RACE_ROUNDS — آرشیو: $race_archived، حذف دائ�
 [ "$((race_archived + race_deleted))" = "$RACE_ROUNDS" ] && ok "هر $RACE_ROUNDS دور رقابت، پاسخ معتبر حذف/آرشیو داشت" || bad "برخی دورها پاسخ حذف نامعتبر داشتند"
 
 say "== ۹) ثبت‌نام، ورود، خروج و حفظ نشست (v1.0.10) =="
-# کد دعوت از مدیر
-INV=$(curl -s -H "$(auth)" -H 'Content-Type: application/json' -d '{}' "$BASE_URL/api/settings/invite")
-INV_CODE=$(echo "$INV" | python3 -c "import sys,json;print(json.load(sys.stdin).get('inviteCode',''))" 2>/dev/null)
-[ -n "$INV_CODE" ] && ok "کد دعوت ساخته شد" || { bad "ساخت کد دعوت: $INV"; INV_CODE=""; }
+# M8: کد دعوت منبع vendor است — ثبت‌نام آزاد «بدون کد» انجام می‌شود (مسیر رسمی محصول)
+INV_CODE=""
 
 NEWM="0913$(date +%s | tail -c 8)"
 JAR2="$(mktemp)"
@@ -292,12 +290,13 @@ ME2=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR3" "$BASE_URL/api/auth/me")
 check "نشست پس از خروج ابطال شده (me → 401)" 401 "$ME2"
 
 # چندمجموعه‌ای (SaaS v2.0): کاربر تازه‌ثبت‌نام = مدیر «مجموعه مستقل» —
-# حذف آن از مسیر /api/users توسط سازنده (بدون مجموعه) باید ۴۰۴ ماسک شود (جداسازی مجموعه‌ها).
+# حذف آن از مسیر /api/users توسط مدیر «مجموعه دیگر» (M1: سازنده کلاً از این مسیر
+# مسدود است و ۴۰۳ می‌گیرد) باید ۴۰۴ ماسک شود (جداسازی مجموعه‌ها).
 # این ۴۰۴ اکنون رفتار درست و مورد انتظار است؛ دیتابیس تست موقتی است و پاک‌سازی خودکار دارد.
 UID2=$(curl -s -b "$JAR2" "$BASE_URL/api/auth/me" | python3 -c "import sys,json;print(json.load(sys.stdin).get('user',{}).get('id',''))" 2>/dev/null)
 if [ -n "$UID2" ]; then
   DU=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "$(auth)" -H 'Content-Type: application/json' "$BASE_URL/api/users/$UID2")
-  [ "$DU" = "404" ] && ok "حذف کاربر مجموعه دیگر توسط سازنده از این مسیر ماسک شد (404)" || bad "ماسک حذف cross-org: $DU"
+  [ "$DU" = "404" ] && ok "حذف کاربر مجموعه دیگر توسط مدیر مجموعه ماسک شد (404)" || bad "ماسک حذف cross-org: $DU"
 fi
 rm -f "$JAR2" "$JAR3"
 

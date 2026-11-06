@@ -1,17 +1,12 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, forbidden } from "@/lib/auth";
-import { isOwnerMobile } from "@/lib/license";
+import { requireAuth } from "@/lib/auth";
+import { requireOwnerContext, adminAccessLogData, logSaAccess } from "@/lib/sa";
 import { strOrNull } from "@/lib/validate";
 
 type Params = { params: Promise<{ id: string }> };
 
-function guardOwner(ctxMobile: string, isAdmin: boolean): Response | null {
-  if (!isAdmin || !isOwnerMobile(ctxMobile)) {
-    return forbidden("این بخش فقط برای سازنده برنامه فعال است");
-  }
-  return null;
-}
+// M9: گارد یکپارچه مالک — منبع واحد در sa.ts
 
 /** انقضای مؤثر یک فروش — رکورد ثبت‌شده یا محاسبه از تاریخ صدور؛ دائمی (۰) = بدون انقضا */
 function effectiveExpiry(sale: {
@@ -27,23 +22,30 @@ function effectiveExpiry(sale: {
 export async function GET(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
-  const { id } = await params;
-  const sale = await db.licenseSale.findUnique({
-    where: { id },
-    include: { charges: { orderBy: { createdAt: "desc" }, take: 50 } },
-  });
-  if (!sale) return Response.json({ error: "فروش لایسنس یافت نشد" }, { status: 404 });
-  const eff = effectiveExpiry(sale);
-  return Response.json({
-    sale: {
-      ...sale,
-      expiresAt: eff ? eff.toISOString() : null,
-      daysLeft: eff ? Math.ceil((eff.getTime() - Date.now()) / 86_400_000) : null,
-      permanent: sale.durationDays === 0,
-    },
-  });
+  try {
+    const { id } = await params;
+    const sale = await db.licenseSale.findUnique({
+      where: { id },
+      include: { charges: { orderBy: { createdAt: "desc" }, take: 50 } },
+    });
+    if (!sale) return Response.json({ error: "فروش لایسنس یافت نشد" }, { status: 404 });
+    // M3: مشاهده پروفایل خریدار — حسابرسی fail-closed
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_LICENSE_SALE", req, `sale=${id.slice(0, 12)}`);
+    const eff = effectiveExpiry(sale);
+    return Response.json({
+      sale: {
+        ...sale,
+        expiresAt: eff ? eff.toISOString() : null,
+        daysLeft: eff ? Math.ceil((eff.getTime() - Date.now()) / 86_400_000) : null,
+        permanent: sale.durationDays === 0,
+      },
+    });
+  } catch (e) {
+    console.error("license sale detail error", e);
+    return Response.json({ error: "خطا در دریافت فروش لایسنس" }, { status: 500 });
+  }
 }
 
 /**
@@ -55,7 +57,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function PATCH(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
   const { id } = await params;
   try {
@@ -65,9 +67,16 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     // ── توقف/ادامه حذف خودکار (مهلت ۳۰ روزه) — مستقل از شارژ ──
     if (typeof body.pauseDeletion === "boolean") {
-      const updated = await db.licenseSale.update({
-        where: { id },
-        data: { pauseDeletion: body.pauseDeletion as boolean },
+      // M3: تغییر وضعیت حذف خودکار — حسابرسی تراکنشی (fail-closed)
+      const updated = await db.$transaction(async (tx) => {
+        const u = await tx.licenseSale.update({
+          where: { id },
+          data: { pauseDeletion: body.pauseDeletion as boolean },
+        });
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, null, "LICENSE_SALE_PAUSE_DELETION", req, String(body.pauseDeletion)),
+        });
+        return u;
       });
       const eff = effectiveExpiry(updated);
       return Response.json({
@@ -102,6 +111,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           createdByName: auth.ctx.user.name,
         },
       }),
+      // M3: شارژ مجدد/تمدید — حسابرسی درون همان تراکنش (fail-closed)
+      db.adminAccessLog.create({
+        data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, null, "LICENSE_SALE_RECHARGE", req, `+${addDays}d`),
+      }),
     ]);
     return Response.json({
       sale: {
@@ -121,7 +134,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
   const { id } = await params;
   try {
@@ -151,12 +164,18 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       deletedBy: auth.ctx.user.mobile,
     });
     if (entries.length > 100) entries = entries.slice(-100);
-    await db.setting.upsert({
-      where: { key: logKey },
-      update: { value: JSON.stringify(entries) },
-      create: { key: logKey, value: JSON.stringify(entries) },
+    // M3: حذف فروش — رد حسابرسی + حذف در یک تراکنش (fail-closed)
+    await db.$transaction(async (tx) => {
+      await tx.setting.upsert({
+        where: { key: logKey },
+        update: { value: JSON.stringify(entries) },
+        create: { key: logKey, value: JSON.stringify(entries) },
+      });
+      await tx.licenseSale.delete({ where: { id } });
+      await tx.adminAccessLog.create({
+        data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, null, "LICENSE_SALE_DELETE", req, `sale=${id.slice(0, 12)}`),
+      });
     });
-    await db.licenseSale.delete({ where: { id } });
     // اگر کلیدِ همین فروش روی این سرور فعال باشد، با حذف فروش لایسنس هم باطل می‌شود
     const row = await db.setting.findUnique({ where: { key: "license_v1" } });
     if (row && row.value.includes(`"${sale.key}"`)) {

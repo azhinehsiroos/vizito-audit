@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { requireAuth, forbidden, tooMany } from "@/lib/auth";
 import { rateLimit, retryAfterSeconds, getClientIp } from "@/lib/rate-limit";
 import { getSchedule, lastAutoBackups, createBackup } from "@/lib/backup";
+import { logSaAccess } from "@/lib/sa";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,10 @@ export async function GET(req: NextRequest) {
       getSchedule(),
       lastAutoBackups(),
     ]);
+    // M3: فهرست همه‌بکاپ‌ها توسط سازنده (نمای کل نصب) — حسابرسی fail-closed
+    if (!auth.ctx.org) {
+      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_BACKUPS_ALL", req, `count=${backups.length}`);
+    }
     return Response.json({
       schedule,
       lastAuto,
@@ -49,6 +54,10 @@ export async function POST(req: NextRequest) {
   try {
     // چندمجموعه‌ای: بکاپ مدیر مجموعه فقط شامل داده‌های مجموعه خودش است
     const row = await createBackup("MANUAL", { id: auth.ctx.user.id, name: auth.ctx.user.name }, auth.ctx.org ? auth.ctx.org.id : null);
+    // M3: بکاپ FULL توسط سازنده (کل نصب) — حسابرسی fail-closed
+    if (!auth.ctx.org) {
+      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "BACKUP_FULL", req, `backup=${row.id.slice(0, 12)}`);
+    }
     return Response.json({
       backup: {
         id: row.id,

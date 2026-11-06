@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireSuper, logSaAccess } from "@/lib/sa";
+import { requireSuper, logSaAccess, adminAccessLogData } from "@/lib/sa";
 import { makeOrgLicenseKey, isLicensePlan, PLAN_DAYS, LicenseControlError } from "@/lib/license";
 import { strField, clampNum } from "@/lib/validate";
 
@@ -126,6 +126,8 @@ export async function POST(req: NextRequest) {
     if (!org) return Response.json({ error: "مجموعه یافت نشد" }, { status: 404 });
 
     // ── صدور/تعیین مستقیم لایسنس ──
+    // M2 (اصلاح فاز B): mutation + LicenseEvent + AdminAccessLog در «یک تراکنش» —
+    // هیچ تغییر وضعیتی بدون ثبت معتبر هر دو گزارشcommit نمی‌شود (fail-closed)
     if (action === "issue") {
       const plan = body.plan;
       if (!isLicensePlan(plan)) {
@@ -133,21 +135,25 @@ export async function POST(req: NextRequest) {
       }
       const permanent = plan === "PERM";
       const expiresAt = permanent ? null : new Date(Date.now() + PLAN_DAYS[plan] * 86_400_000);
-      const existing = await db.license.findUnique({ where: { orgId } });
-      if (existing) {
-        await db.license.update({
-          where: { id: existing.id },
-          data: { plan, expiresAt, status: "ACTIVE", source: "ADMIN", note },
+      await db.$transaction(async (tx) => {
+        const existing = await tx.license.findUnique({ where: { orgId } });
+        if (existing) {
+          await tx.license.update({
+            where: { id: existing.id },
+            data: { plan, expiresAt, status: "ACTIVE", source: "ADMIN", note },
+          });
+        } else {
+          await tx.license.create({
+            data: { orgId, plan, expiresAt, status: "ACTIVE", source: "ADMIN", note },
+          });
+        }
+        await tx.licenseEvent.create({
+          data: { orgId, type: "ISSUE", plan, actorName: auth.ctx.user.name, note: note || (permanent ? "لایسنس دائمی" : `صدور ${PLAN_DAYS[plan]} روزه`) },
         });
-      } else {
-        await db.license.create({
-          data: { orgId, plan, expiresAt, status: "ACTIVE", source: "ADMIN", note },
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, orgId, "ISSUE_LICENSE", req, plan),
         });
-      }
-      await db.licenseEvent.create({
-        data: { orgId, type: "ISSUE", plan, actorName: auth.ctx.user.name, note: note || (permanent ? "لایسنس دائمی" : `صدور ${PLAN_DAYS[plan]} روزه`) },
       });
-      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, orgId, "ISSUE_LICENSE", req, plan);
       return Response.json({ ok: true, plan, expiresAt: expiresAt ? expiresAt.toISOString() : null });
     }
 
@@ -166,10 +172,14 @@ export async function POST(req: NextRequest) {
         if (e instanceof LicenseControlError) return Response.json({ error: e.message }, { status: 400 });
         throw e;
       }
-      await db.licenseEvent.create({
-        data: { orgId, type: "ISSUE", plan, actorName: auth.ctx.user.name, note: note || `کلید VZT3 ${plan} تولید شد` },
+      await db.$transaction(async (tx) => {
+        await tx.licenseEvent.create({
+          data: { orgId, type: "ISSUE", plan, actorName: auth.ctx.user.name, note: note || `کلید VZT3 ${plan} تولید شد` },
+        });
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, orgId, "ISSUE_LICENSE_KEY", req, plan),
+        });
       });
-      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, orgId, "ISSUE_LICENSE_KEY", req, plan);
       return Response.json({ ok: true, key, plan, expiresAt: expiresAt ? expiresAt.toISOString() : null });
     }
 
@@ -185,11 +195,15 @@ export async function POST(req: NextRequest) {
       // تمدید زودهنگام: از max(انقضای فعلی، امروز) — همان منطق شارژ مجدد نسخه قبلی
       const base = Math.max(lic.expiresAt.getTime(), Date.now());
       const expiresAt = new Date(base + days * 86_400_000);
-      await db.license.update({ where: { id: lic.id }, data: { expiresAt, status: "ACTIVE" } });
-      await db.licenseEvent.create({
-        data: { orgId, licenseId: lic.id, type: "EXTEND", plan: lic.plan, days, actorName: auth.ctx.user.name, note: note || `تمدید ${days} روزه` },
+      await db.$transaction(async (tx) => {
+        await tx.license.update({ where: { id: lic.id }, data: { expiresAt, status: "ACTIVE" } });
+        await tx.licenseEvent.create({
+          data: { orgId, licenseId: lic.id, type: "EXTEND", plan: lic.plan, days, actorName: auth.ctx.user.name, note: note || `تمدید ${days} روزه` },
+        });
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, orgId, "EXTEND_LICENSE", req, `+${days}d`),
+        });
       });
-      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, orgId, "EXTEND_LICENSE", req, `+${days}d`);
       return Response.json({ ok: true, expiresAt: expiresAt.toISOString() });
     }
 
@@ -198,11 +212,15 @@ export async function POST(req: NextRequest) {
       if (org.status === "SUSPENDED") {
         return Response.json({ error: "این مجموعه از قبل تعلیق است" }, { status: 400 });
       }
-      await db.org.update({ where: { id: orgId }, data: { status: "SUSPENDED", suspendedAt: new Date() } });
-      await db.licenseEvent.create({
-        data: { orgId, type: "SUSPEND", actorName: auth.ctx.user.name, note: note || "تعلیق توسط سازنده" },
+      await db.$transaction(async (tx) => {
+        await tx.org.update({ where: { id: orgId }, data: { status: "SUSPENDED", suspendedAt: new Date() } });
+        await tx.licenseEvent.create({
+          data: { orgId, type: "SUSPEND", actorName: auth.ctx.user.name, note: note || "تعلیق توسط سازنده" },
+        });
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, orgId, "SUSPEND_ORG", req, note || undefined),
+        });
       });
-      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, orgId, "SUSPEND_ORG", req, note || undefined);
       return Response.json({ ok: true, status: "SUSPENDED" });
     }
 
@@ -211,11 +229,15 @@ export async function POST(req: NextRequest) {
       if (org.status !== "SUSPENDED") {
         return Response.json({ error: "این مجموعه تعلیق نیست" }, { status: 400 });
       }
-      await db.org.update({ where: { id: orgId }, data: { status: "ACTIVE", suspendedAt: null } });
-      await db.licenseEvent.create({
-        data: { orgId, type: "RESUME", actorName: auth.ctx.user.name, note: note || "رفع تعلیق" },
+      await db.$transaction(async (tx) => {
+        await tx.org.update({ where: { id: orgId }, data: { status: "ACTIVE", suspendedAt: null } });
+        await tx.licenseEvent.create({
+          data: { orgId, type: "RESUME", actorName: auth.ctx.user.name, note: note || "رفع تعلیق" },
+        });
+        await tx.adminAccessLog.create({
+          data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, orgId, "RESUME_ORG", req),
+        });
       });
-      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, orgId, "RESUME_ORG", req);
       return Response.json({ ok: true, status: "ACTIVE" });
     }
 

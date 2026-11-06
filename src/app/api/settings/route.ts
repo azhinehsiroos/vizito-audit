@@ -1,29 +1,31 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireAuth, forbidden, getAuth } from "@/lib/auth";
+import { isOwnerMobile } from "@/lib/license";
 import { isSafeImageDataUrl } from "@/lib/validate";
 
 const LOGO_KEY = "app_logo";
 const INVITE_KEY = "invite_code";
 const MAX_LOGO_LEN = 1_500_000; // ~1.5MB data URL
 
-/** دریافت تنظیمات برند — لوگو عمومی؛ کد دعوت فقط برای مدیر */
+/** دریافت تنظیمات برند — لوگو عمومی؛ کد دعوت فقط برای سازنده (M8 — اصلاح فاز B) */
 export async function GET(req: NextRequest) {
   const rows = await db.setting.findMany({
     where: { key: { in: [LOGO_KEY, INVITE_KEY] } },
   });
   const logo = rows.find((r) => r.key === LOGO_KEY)?.value || null;
 
-  // کد دعوت فقط به مدیر نشان داده می‌شود
+  // M8: کد دعوت یک Setting سراسریِ vendor است — هرگز به مدیران مجموعه‌ها نمایش داده نمی‌شود
   const ctx = await getAuth(req);
-  const inviteCode = ctx?.isAdmin ? rows.find((r) => r.key === INVITE_KEY)?.value || null : undefined;
+  const isVendor = !!ctx && ctx.isAdmin && (ctx.isSuperAdmin || isOwnerMobile(ctx.user.mobile));
+  const inviteCode = isVendor ? rows.find((r) => r.key === INVITE_KEY)?.value || null : undefined;
 
   return Response.json(inviteCode === undefined ? { logo } : { logo, inviteCode });
 }
 
-/** تغییر لوگو / تنظیمات برند — فقط مدیر */
+/** تغییر لوگو / تنظیمات برند — فقط مدیر (برندینگ نصب — داده تجاری سازمانی نیست، بدون section) */
 export async function PUT(req: NextRequest) {
-  const auth = await requireAuth(req, "users");
+  const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
   if (!auth.ctx.isAdmin) return forbidden("فقط مدیر می‌تواند لوگو را تغییر دهد");
   try {

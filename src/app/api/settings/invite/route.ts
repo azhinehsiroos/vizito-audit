@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import crypto from "crypto";
 import { db } from "@/lib/db";
-import { requireAuth, forbidden } from "@/lib/auth";
+import { requireSuper, logSaAccess } from "@/lib/sa";
 
 const INVITE_KEY = "invite_code";
 
@@ -14,28 +14,47 @@ function newCode(): string {
   return code;
 }
 
-/** مشاهده کد دعوت فعلی — فقط مدیر (در صورت نبودن، خودکار ساخته می‌شود) */
+/**
+ * M8 (اصلاح فاز B): کد دعوت یک منبع سراسریِ vendor است (گیت ثبت‌نام آزاد روی نصب) —
+ * مدیریت آن فقط از آنِ سازنده برنامه است؛ مدیر مجموعه دیگر آن را نمی‌بیند/نمی‌چرخاند
+ * تا منبع مشترک چندمستأجری توسط یک مستأجر تغییر نکند.
+ */
+
+/** مشاهده کد دعوت فعلی — فقط سازنده (در صورت نبودن، خودکار ساخته می‌شود) */
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth(req, "users");
+  const auth = await requireSuper(req);
   if ("error" in auth) return auth.error;
-  if (!auth.ctx.isAdmin) return forbidden("فقط مدیر به کد دعوت دسترسی دارد");
-  const row = await db.setting.findUnique({ where: { key: INVITE_KEY } });
-  if (row) return Response.json({ inviteCode: row.value });
-  const code = newCode();
-  await db.setting.create({ data: { key: INVITE_KEY, value: code } });
-  return Response.json({ inviteCode: code });
+  try {
+    const row = await db.setting.findUnique({ where: { key: INVITE_KEY } });
+    if (row) {
+      await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_INVITE_CODE", req);
+      return Response.json({ inviteCode: row.value });
+    }
+    const code = newCode();
+    await db.setting.create({ data: { key: INVITE_KEY, value: code } });
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_INVITE_CODE", req);
+    return Response.json({ inviteCode: code });
+  } catch (e) {
+    console.error("invite get error", e);
+    return Response.json({ error: "خطا در دریافت کد دعوت" }, { status: 500 });
+  }
 }
 
-/** تولید کد دعوت جدید (کد قبلی باطل می‌شود) — فقط مدیر */
+/** تولید کد دعوت جدید (کد قبلی باطل می‌شود) — فقط سازنده */
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req, "users");
+  const auth = await requireSuper(req);
   if ("error" in auth) return auth.error;
-  if (!auth.ctx.isAdmin) return forbidden("فقط مدیر می‌تواند کد دعوت بسازد");
-  const code = newCode();
-  await db.setting.upsert({
-    where: { key: INVITE_KEY },
-    update: { value: code },
-    create: { key: INVITE_KEY, value: code },
-  });
-  return Response.json({ inviteCode: code });
+  try {
+    const code = newCode();
+    await db.setting.upsert({
+      where: { key: INVITE_KEY },
+      update: { value: code },
+      create: { key: INVITE_KEY, value: code },
+    });
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "ROTATE_INVITE_CODE", req);
+    return Response.json({ inviteCode: code });
+  } catch (e) {
+    console.error("invite rotate error", e);
+    return Response.json({ error: "خطا در تولید کد دعوت" }, { status: 500 });
+  }
 }

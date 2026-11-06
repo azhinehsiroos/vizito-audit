@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireAuth, forbidden } from "@/lib/auth";
-import { isOwnerMobile } from "@/lib/license";
+import { requireAuth } from "@/lib/auth";
+import { requireOwnerContext, adminAccessLogData, logSaAccess } from "@/lib/sa";
 import { strField, strOrNull } from "@/lib/validate";
 import { rateLimit, retryAfterSeconds, getClientIp } from "@/lib/rate-limit";
 
@@ -24,12 +24,7 @@ const AUDIENCES = [
 const GRACE_MS = 30 * 86_400_000;
 const EXPIRING_WINDOW_MS = 14 * 86_400_000;
 
-function guardOwner(mobile: string, isAdmin: boolean): Response | null {
-  if (!isAdmin || !isOwnerMobile(mobile)) {
-    return forbidden("ارسال پیام مدیریتی فقط برای سازنده برنامه فعال است");
-  }
-  return null;
-}
+// M9: گارد یکپارچه مالک — نقش SUPER_ADMIN یا موبایل سازنده (منبع واحد در sa.ts)
 
 /** انقضای مؤثر یک فروش (دائمی = null) */
 function saleExpiry(s: { durationDays: number; expiresAt: Date | null; createdAt: Date }): number | null {
@@ -91,33 +86,40 @@ async function resolveRecipients(audience: string, userId: string | null): Promi
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
-  const messages = await db.message.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    include: { recipients: { select: { readAt: true } } },
-  });
-  return Response.json({
-    messages: messages.map((m) => ({
-      id: m.id,
-      audience: m.audience,
-      title: m.title,
-      body: m.body,
-      important: m.important,
-      senderName: m.senderName,
-      createdAt: m.createdAt,
-      deleted: !!m.deletedAt,
-      recipientCount: m.recipients.length,
-      readCount: m.recipients.filter((r) => r.readAt).length,
-    })),
-  });
+  try {
+    const messages = await db.message.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: { recipients: { select: { readAt: true } } },
+    });
+    // M3: مشاهده تاریخچه پیام‌های مدیریتی هم حسابرسی fail-closed دارد
+    await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "VIEW_MASS_MESSAGES", req, `count=${messages.length}`);
+    return Response.json({
+      messages: messages.map((m) => ({
+        id: m.id,
+        audience: m.audience,
+        title: m.title,
+        body: m.body,
+        important: m.important,
+        senderName: m.senderName,
+        createdAt: m.createdAt,
+        deleted: !!m.deletedAt,
+        recipientCount: m.recipients.length,
+        readCount: m.recipients.filter((r) => r.readAt).length,
+      })),
+    });
+  } catch (e) {
+    console.error("admin message list error", e);
+    return Response.json({ error: "خطا در دریافت پیام‌ها" }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
-  const denied = guardOwner(auth.ctx.user.mobile, auth.ctx.isAdmin);
+  const denied = requireOwnerContext(auth.ctx);
   if (denied) return denied;
   // محدودیت نرخ سبک — ضد سوءاستفاده/اشتباه تکراری
   const ip = getClientIp(req);
@@ -160,6 +162,10 @@ export async function POST(req: NextRequest) {
       await tx.messageRecipient.createMany({
         data: recipients.map((uid) => ({ messageId: msg.id, userId: uid })),
         // نکته: skipDuplicates در SQLite پشتیبانی نمی‌شود — messageId تازه است و تضادی ممکن نیست
+      });
+      // M3: حسابرسی ارسال پیام گروهی — درون همان تراکنش (fail-closed)
+      await tx.adminAccessLog.create({
+        data: adminAccessLogData(auth.ctx.user.id, auth.ctx.user.name, null, "SEND_MASS_MESSAGE", req, `${audience} → ${recipients.length}`),
       });
       return msg;
     });
