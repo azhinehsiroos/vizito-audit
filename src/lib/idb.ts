@@ -18,13 +18,25 @@
  *    نمی‌شود و صف سفارش‌ها به سازمان/کاربر/دستگاه اصلی خود گره خورده می‌ماند
  *  - خروج از حساب فقط «آینه نشست» (کلید me) را پاک می‌کند؛ صف‌ها و کش داده
  *    در DB همان حساب می‌مانند و پس از ورود مجدد همان حساب دوباره در دسترس و
- *    همگام می‌شوند (حریم خصوصی بین حساب‌ها با جداسازی DB تضمین می‌شود؛
- *    رمزنگاری at-rest موضوع فاز C است)
+ *    همگام می‌شوند (حریم خصوصی بین حساب‌ها با جداسازی DB تضمین می‌شود)
+ *  - رمزنگاری at-rest (فاز C — مرحله ۱۰ دستور تجاری): همه رکوردها پیش از
+ *    نوشتن با AES-256-GCM (WebCrypto) رمز می‌شوند — کلید ۳۲بایتی تصادفی
+ *    «به ازای هر حساب» یک‌بار ساخته و در localStorage همان پروفایل نگه‌داری
+ *    می‌شود. رکورد بسته‌شده: {s:2, iv, ct} — بدون رمزنگاری ممکن (HTTP غیرامن):
+ *    {s:1, plain} به‌صورت شفاف و با نمایش وضعیت واقعی در UI.
+ *    ⚠️ حد واقعی این محافظت (ادعای کاذب ممنوع): از خواندن مستقیم رکوردهای
+ *    IndexedDB توسط کد/ابزار بیرونی جلوگیری می‌کند، اما در بستر وب کلید در
+ *    همان پروفایل مرورگر/WebView است — در برابر مهاجمی که «کل پروفایل» را
+ *    کپی کند یا بتواند JS در مبدأ اپ اجرا کند (XSS) محافظت کامل نیست؛
+ *    محافظت کامل at-rest در Android فقط با Keystore + پل نیتیو ممکن است
+ *    (مستند در فاز APK). رکوردهای قدیمیِ بدون رمز در init دوباره بسته می‌شوند
+ *    (reseal — idempotent).
  */
 
 const LEGACY_DB_NAME = "vizito-db"; // نصب‌های قبل از فاز A — یک‌بار مهاجرت داده می‌شوند
 const LEGACY_MIGRATED_KEY = "vizito-legacy-migrated";
 const DB_VERSION = 2;
+const KEY_PREFIX = "vizito-k"; // کلید رمزنگاری at-rest هر حساب (فاز C)
 const STORE_SUPPORT = "support-outbox";
 const STORE_ORDERS = "orders-outbox";
 const STORE_SNAPSHOT = "snapshot";
@@ -66,7 +78,11 @@ export type OrderOutboxItem = {
   lastError?: string | null;
 };
 
-/** رکورد اسنپ‌شات — key: customers | groups | settings | license | me | summary */
+/**
+ * منطق رکورد اسنپ‌شات — key: customers | groups | settings | license | me | summary.
+ * فاز C: در حافظه فیزیکی به شکل بسته ذخیره می‌شود — {key, syncedAt, s:2, iv, ct}
+ * (value رمز شده) یا در نبود WebCrypto: {key, syncedAt, s:1, plain}.
+ */
 export type SnapshotEntry = {
   key: string;
   value: unknown;
@@ -77,6 +93,9 @@ export type SnapshotEntry = {
 
 /** نام DB حساب جاری — تا پیش از ورود null است و همه عملیات بی‌اثر می‌شوند */
 let activeDbName: string | null = null;
+
+/** کلید AES-GCM حساب جاری (فاز C) — در محیط بدون WebCrypto null می‌ماند (fallback شفاف) */
+let activeCryptoKey: CryptoKey | null = null;
 
 /** آیا DB محلی برای حساب واردشده آماده شده است؟ (گارد چرخه همگام‌سازی — M7) */
 export function isLocalDbInitialized(): boolean {
@@ -92,10 +111,13 @@ export async function initLocalDbForUser(userId: string): Promise<void> {
     const name = `vizito-u${safe}`;
     if (activeDbName === name) return;
     activeDbName = name;
+    await ensureAccountKey(safe); // فاز C — کلید رمزنگاری این حساب (پیش از هر خواندن/نوشتن)
     // اطمینان از وجود فروشگاه‌ها در DB این حساب
     await openNamedDb(name);
     // مهاجرت یک‌باره نصب‌های قدیمی (صف‌های قبل از فاز A) به DB همین حساب
     await migrateLegacyDbIfNeeded();
+    // فاز C — بستن مجدد رکوردهای قدیمیِ بدون رمز (idempotent)
+    await resealLegacyRecords();
   } catch {
     // آماده‌سازی ناموفق — عملیات آفلاین در این دستگاه غیرفعال می‌ماند (مانع بوت نیست)
   }
@@ -108,6 +130,160 @@ export async function initLocalDbForUser(userId: string): Promise<void> {
  */
 export function closeLocalDb(): void {
   activeDbName = null;
+  activeCryptoKey = null; // فاز C — کلید حساب قبلی در حافظه نمی‌ماند
+}
+
+// ── رمزنگاری at-rest (فاز C — AES-256-GCM/WebCrypto؛ حد واقعی در سربرگ) ──
+
+function subtleOk(): boolean {
+  try {
+    return typeof crypto !== "undefined" && !!crypto.subtle && typeof localStorage !== "undefined";
+  } catch {
+    return false;
+  }
+}
+
+function b64encode(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function b64decode(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** کلید ۳۲بایتی تصادفی «به ازای هر حساب» — یک‌بار ساخته و در localStorage نگه‌داری می‌شود */
+async function ensureAccountKey(safeUserId: string): Promise<void> {
+  activeCryptoKey = null;
+  if (!subtleOk() || !safeUserId) return; // fallback شفاف — وضعیت واقعی در UI نمایش داده می‌شود
+  try {
+    const storeKey = KEY_PREFIX + safeUserId;
+    let raw = localStorage.getItem(storeKey);
+    let valid = false;
+    if (raw && /^[A-Za-z0-9+/]+={0,2}$/.test(raw)) {
+      try {
+        valid = b64decode(raw).length === 32;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid) {
+      raw = b64encode(crypto.getRandomValues(new Uint8Array(32)));
+      localStorage.setItem(storeKey, raw);
+    }
+    activeCryptoKey = await crypto.subtle.importKey(
+      "raw",
+      b64decode(raw as string) as BufferSource,
+      "AES-GCM",
+      false,
+      ["encrypt", "decrypt"]
+    );
+  } catch {
+    activeCryptoKey = null; // fallback شفاف — هرگز مانع بوت/آفلاین نشود
+  }
+}
+
+/** آیا رمزنگاری at-rest واقعاً فعال است؟ (نمایش صادقانه در UI — بدون ادعای کاذب) */
+export function isAtRestEncryptionAvailable(): boolean {
+  return activeCryptoKey !== null;
+}
+
+/** بستن یک مقدار — {s:2, iv, ct} یا در نبود WebCrypto/خطا، fallback شفاف {s:1, plain} */
+async function sealRecord(fieldName: string, fieldValue: string, value: unknown): Promise<Record<string, unknown>> {
+  if (activeCryptoKey) {
+    try {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const plain = new TextEncoder().encode(JSON.stringify(value ?? null));
+      const ct = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv as BufferSource },
+        activeCryptoKey,
+        plain as BufferSource
+      );
+      return { [fieldName]: fieldValue, s: 2, iv: b64encode(iv), ct: b64encode(new Uint8Array(ct)) };
+    } catch {
+      // خطای رمزنگاری — fallback شفاف (حفظ داده مهم‌تر است؛ وضعیت در UI صادقانه)
+    }
+  }
+  return { [fieldName]: fieldValue, s: 1, plain: value ?? null };
+}
+
+/** گشودن یک رکورد صف (orders/support) — رکورد غیرقابل رمزگشایی ⇒ null (حذف از خروجی) */
+async function openOutboxRecord<T>(rec: unknown): Promise<T | null> {
+  if (!rec || typeof rec !== "object") return null;
+  const r = rec as Record<string, unknown>;
+  try {
+    if (r.s === 2) return (await decryptJson(String(r.iv), String(r.ct))) as T;
+    if (r.s === 1) return (r.plain as T) ?? null;
+    return r as unknown as T; // رکورد legacy (پیش از reseal) — خودِ رکورد همان آیتم است
+  } catch {
+    return null; // کلید از دست رفته/رکورد خراب — از خروجی فیلتر می‌شود (حد محافظت؛ مستند در سربرگ فایل)
+  }
+}
+
+/** گشودن رکورد اسنپ‌شات — syncedAt همیشه plaintext می‌ماند (فقط نمایش تاریخ) */
+async function openSnapshotRecord<T>(rec: unknown): Promise<{ value: T; syncedAt: string } | null> {
+  if (!rec || typeof rec !== "object") return null;
+  const r = rec as Record<string, unknown>;
+  try {
+    let value: unknown;
+    if (r.s === 2) value = await decryptJson(String(r.iv), String(r.ct));
+    else if (r.s === 1) value = r.plain;
+    else value = r.value; // legacy
+    if (value === undefined) return null;
+    return { value: value as T, syncedAt: String(r.syncedAt || "") };
+  } catch {
+    return null;
+  }
+}
+
+async function decryptJson(ivB64: string, ctB64: string): Promise<unknown> {
+  if (!activeCryptoKey) throw new Error("no-key");
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: b64decode(ivB64) as BufferSource },
+    activeCryptoKey,
+    b64decode(ctB64) as BufferSource
+  );
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+/**
+ * یک‌بار در هر init: رکوردهای قدیمیِ بدون رمز (شکل legacy یا s:1) با کلید همین
+ * حساب دوباره بسته می‌شوند — idempotent؛ رکوردهای s:2 دست‌نخورده می‌مانند.
+ * هرگز مانع بوت نمی‌شود (اختیاری است).
+ */
+async function resealLegacyRecords(): Promise<void> {
+  try {
+    const rawOrders = await withStore<Record<string, unknown>[]>(STORE_ORDERS, "readonly", (s) =>
+      s.getAll() as IDBRequest<Record<string, unknown>[]>
+    );
+    for (const rec of rawOrders || []) {
+      if (rec && rec.s === 2) continue;
+      const item = await openOutboxRecord<OrderOutboxItem>(rec);
+      if (item && item.clientRef) await orderOutboxAdd(item);
+    }
+    const rawSupport = await withStore<Record<string, unknown>[]>(STORE_SUPPORT, "readonly", (s) =>
+      s.getAll() as IDBRequest<Record<string, unknown>[]>
+    );
+    for (const rec of rawSupport || []) {
+      if (rec && rec.s === 2) continue;
+      const item = await openOutboxRecord<SupportOutboxItem>(rec);
+      if (item && item.clientRef) await outboxEnqueue(item);
+    }
+    const rawSnaps = await withStore<Record<string, unknown>[]>(STORE_SNAPSHOT, "readonly", (s) =>
+      s.getAll() as IDBRequest<Record<string, unknown>[]>
+    );
+    for (const rec of rawSnaps || []) {
+      if (rec && rec.s === 2) continue;
+      const opened = await openSnapshotRecord<unknown>(rec);
+      if (opened && typeof rec.key === "string") await snapshotPut(rec.key, opened.value, opened.syncedAt);
+    }
+  } catch {
+    // اختیاری — هرگز مانع بوت نشود
+  }
 }
 
 /** بازکردن DB با نام مشخص — ساخت فروشگاه‌ها در اولین بار */
@@ -179,14 +355,15 @@ async function migrateLegacyDbIfNeeded(): Promise<void> {
     const legacyOrders = await readAll(STORE_ORDERS);
     const legacySupport = await readAll(STORE_SUPPORT);
     // انتقال با همان clientRef (put upsert — idempotent؛ سرور هم ضدتکرار دارد)
+    // فاز C: مسیر نوشتن از توابع عمومی می‌گذرد تا رکوردها «بسته» (رمز) ذخیره شوند
     for (const o of legacyOrders) {
       if (o && typeof o === "object" && "clientRef" in (o as Record<string, unknown>)) {
-        await withStore(STORE_ORDERS, "readwrite", (s) => s.put(o as OrderOutboxItem) as unknown as IDBRequest<IDBValidKey>);
+        await orderOutboxAdd(o as OrderOutboxItem);
       }
     }
     for (const m of legacySupport) {
       if (m && typeof m === "object" && "clientRef" in (m as Record<string, unknown>)) {
-        await withStore(STORE_SUPPORT, "readwrite", (s) => s.put(m as SupportOutboxItem) as unknown as IDBRequest<IDBValidKey>);
+        await outboxEnqueue(m as SupportOutboxItem);
       }
     }
     legacy.close();
@@ -224,17 +401,23 @@ async function withStore<T>(
 
 // ── صف پیام پشتیبانی (فاز پشتیبانی — سازگاری کامل) ──
 
-/** افزودن/به‌روزرسانی آیتم صف */
+/** افزودن/به‌روزرسانی آیتم صف — فاز C: پیش از نوشتن بسته (رمز) می‌شود */
 export async function outboxEnqueue(item: SupportOutboxItem): Promise<void> {
-  await withStore(STORE_SUPPORT, "readwrite", (s) => s.put(item) as unknown as IDBRequest<IDBValidKey>);
+  const rec = await sealRecord("clientRef", item.clientRef, item);
+  await withStore(STORE_SUPPORT, "readwrite", (s) => s.put(rec) as unknown as IDBRequest<IDBValidKey>);
 }
 
 /** همه آیتم‌های صف (قدیمی‌ترین اول) */
 export async function outboxList(): Promise<SupportOutboxItem[]> {
-  const items = await withStore<SupportOutboxItem[]>(STORE_SUPPORT, "readonly", (s) =>
-    s.getAll() as IDBRequest<SupportOutboxItem[]>
+  const recs = await withStore<Record<string, unknown>[]>(STORE_SUPPORT, "readonly", (s) =>
+    s.getAll() as IDBRequest<Record<string, unknown>[]>
   );
-  return (items || []).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const items: SupportOutboxItem[] = [];
+  for (const rec of recs || []) {
+    const item = await openOutboxRecord<SupportOutboxItem>(rec);
+    if (item && item.clientRef) items.push(item);
+  }
+  return items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /** حذف پس از ack سرور */
@@ -277,25 +460,32 @@ export async function flushSupportOutbox(
 
 // ── صف سفارش آفلاین (بخش ۵.۳) ──
 
-/** ثبت سفارش آفلاین در صف — clientRef یکتا ضدتکرار سمت سرور */
+/** ثبت سفارش آفلاین در صف — clientRef یکتا ضدتکرار سمت سرور؛ فاز C: بسته (رمز) ذخیره می‌شود */
 export async function orderOutboxAdd(item: OrderOutboxItem): Promise<void> {
-  await withStore(STORE_ORDERS, "readwrite", (s) => s.put(item) as unknown as IDBRequest<IDBValidKey>);
+  const rec = await sealRecord("clientRef", item.clientRef, item);
+  await withStore(STORE_ORDERS, "readwrite", (s) => s.put(rec) as unknown as IDBRequest<IDBValidKey>);
 }
 
 /** همه سفارش‌های در انتظار همگام‌سازی (قدیمی‌ترین اول) */
 export async function orderOutboxList(): Promise<OrderOutboxItem[]> {
-  const items = await withStore<OrderOutboxItem[]>(STORE_ORDERS, "readonly", (s) =>
-    s.getAll() as IDBRequest<OrderOutboxItem[]>
+  const recs = await withStore<Record<string, unknown>[]>(STORE_ORDERS, "readonly", (s) =>
+    s.getAll() as IDBRequest<Record<string, unknown>[]>
   );
-  return (items || []).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const items: OrderOutboxItem[] = [];
+  for (const rec of recs || []) {
+    const item = await openOutboxRecord<OrderOutboxItem>(rec);
+    if (item && item.clientRef) items.push(item);
+  }
+  return items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /** یک سفارش از صف — برای صفحه جزئیات آفلاین */
 export async function orderOutboxGet(clientRef: string): Promise<OrderOutboxItem | null> {
-  const item = await withStore<OrderOutboxItem>(STORE_ORDERS, "readonly", (s) =>
-    s.get(clientRef) as IDBRequest<OrderOutboxItem>
+  const rec = await withStore<Record<string, unknown>>(STORE_ORDERS, "readonly", (s) =>
+    s.get(clientRef) as IDBRequest<Record<string, unknown>>
   );
-  return item || null;
+  const item = await openOutboxRecord<OrderOutboxItem>(rec);
+  return item && item.clientRef ? item : null;
 }
 
 /** حذف پس از ack سرور (فاز همگام‌سازی) */
@@ -310,19 +500,23 @@ export async function orderOutboxClear(): Promise<void> {
 
 // ── اسنپ‌شات آخرین همگام‌سازی ──
 
-/** ذخیره/به‌روزرسانی یک کلید اسنپ‌شات — پس از هر دریافت موفق از سرور صدا زده می‌شود */
-export async function snapshotPut(key: string, value: unknown): Promise<void> {
-  const entry: SnapshotEntry = { key, value, syncedAt: new Date().toISOString() };
+/**
+ * ذخیره/به‌روزرسانی یک کلید اسنپ‌شات — پس از هر دریافت موفق از سرور صدا زده می‌شود.
+ * فاز C: value بسته (رمز) ذخیره می‌شود؛ syncedAt (فقط نمایش تاریخ) plaintext می‌ماند.
+ * syncedAtOverride: برای reseal رکوردهای قدیمی بدون از بین بردن «آخرین همگام‌سازی» نمایشی.
+ */
+export async function snapshotPut(key: string, value: unknown, syncedAtOverride?: string): Promise<void> {
+  const sealed = await sealRecord("key", key, value);
+  const entry = { key, syncedAt: syncedAtOverride || new Date().toISOString(), ...sealed };
   await withStore(STORE_SNAPSHOT, "readwrite", (s) => s.put(entry) as unknown as IDBRequest<IDBValidKey>);
 }
 
-/** خواندن یک کلید اسنپ‌شات — نبود ← null */
+/** خواندن یک کلید اسنپ‌شات — نبود/غیرقابل رمزگشایی ← null */
 export async function snapshotGet<T = unknown>(key: string): Promise<{ value: T; syncedAt: string } | null> {
-  const entry = await withStore<SnapshotEntry>(STORE_SNAPSHOT, "readonly", (s) =>
-    s.get(key) as IDBRequest<SnapshotEntry>
+  const rec = await withStore<Record<string, unknown>>(STORE_SNAPSHOT, "readonly", (s) =>
+    s.get(key) as IDBRequest<Record<string, unknown>>
   );
-  if (!entry) return null;
-  return { value: entry.value as T, syncedAt: entry.syncedAt };
+  return openSnapshotRecord<T>(rec);
 }
 
 /** حذف یک کلید اسنپ‌شات — خروج از حساب فقط «آینه نشست» (me) را پاک می‌کند (C1) */

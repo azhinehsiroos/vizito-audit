@@ -21,7 +21,8 @@ import { Logo } from "@/components/vizito/Logo";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
 import { fileToCompressedDataUrl } from "@/lib/image";
-import { performLogout } from "@/components/vizito/VizitoApp";
+import { performLogout, logoutLocalTeardown } from "@/components/vizito/VizitoApp";
+import { orderOutboxList, clearAllLocalData, isAtRestEncryptionAvailable } from "@/lib/idb";
 import { expiryLabel, toFa, formatJalali } from "@/lib/jalali";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "@/hooks/use-toast";
@@ -46,6 +47,7 @@ import {
   LockKeyhole,
   Eye,
   EyeOff,
+  Trash2,
 } from "lucide-react";
 
 export function SettingsView() {
@@ -184,6 +186,43 @@ export function SettingsView() {
     });
   };
 
+  // ── فاز C: پاک‌سازی دستی داده‌های محلی این دستگاه (فقط مدیر — تأیید دو مرحله‌ای) ──
+  // قانون مرحله ۸ دستور تجاری: حذف دستی صف فقط با تأیید صریح؛ خروج از حساب هرگز صف را پاک نمی‌کند
+  const [wiping, setWiping] = useState(false);
+  const wipeLocalData = async () => {
+    if (wiping) return;
+    let pending = 0;
+    try {
+      pending = (await orderOutboxList()).length;
+    } catch {
+      pending = 0;
+    }
+    const first = window.confirm(
+      pending > 0
+        ? `${toFa(pending)} سفارش همگام‌نشده در صف این دستگاه وجود دارد.\n\n` +
+            "پاک‌سازی، این سفارش‌ها را «برای همیشه» از بین می‌برد و دیگر به سرور ارسال نمی‌شوند.\n\n" +
+            "کش آفلاین (مشتریان/کالاها) و صف‌های محلیِ حساب جاری حذف می‌شود؛ داده‌های سرور دست‌نخورده می‌مانند.\n\n" +
+            "ادامه می‌دهید؟"
+        : "کش آفلاین (مشتریان/کالاها) و صف‌های محلیِ حساب جاری از این دستگاه پاک می‌شود.\n\n" +
+            "داده‌های سرور دست‌نخورده می‌مانند.\n\nادامه می‌دهید؟"
+    );
+    if (!first) return;
+    const second = window.confirm(
+      "تأیید نهایی — این عمل بازگشت‌پذیر نیست.\nپاک‌سازی داده‌های محلی انجام شود؟"
+    );
+    if (!second) return;
+    setWiping(true);
+    try {
+      await clearAllLocalData();
+      api("/api/auth/logout", { method: "POST" }).catch(() => {});
+      await logoutLocalTeardown();
+      window.location.reload();
+    } catch {
+      setWiping(false);
+      toast({ title: "خطا", description: "پاک‌سازی داده‌های محلی ناموفق بود", variant: "destructive" });
+    }
+  };
+
   const uploadLogo = async (file: File | undefined) => {
     if (!file) return;
     if (!requireOnline()) return;
@@ -308,6 +347,37 @@ export function SettingsView() {
           </button>
         </CardContent>
       </Card>
+
+      {/* پاک‌سازی داده‌های محلی این دستگاه — فقط مدیر (فاز C؛ حذف دستی فقط با تأیید صریح) */}
+      {me?.isAdmin && (
+        <Card>
+          <CardContent className="p-3 space-y-2">
+            <div className="text-xs font-bold flex items-center gap-1.5">
+              <Trash2 className="h-3.5 w-3.5 text-destructive" /> پاک‌سازی داده‌های این دستگاه
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-4">
+              حذف کامل کش آفلاین (مشتریان/کالاها) و صف‌های محلیِ حساب جاری از همین دستگاه —
+              شامل سفارش‌های همگام‌نشده. داده‌های سرور و دستگاه‌های دیگر دست‌نخورده می‌مانند
+              و پس از پاک‌سازی، از حساب خارج می‌شوید.
+            </p>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="w-full"
+              onClick={() => void wipeLocalData()}
+              disabled={wiping}
+            >
+              {wiping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              پاک‌سازی و خروج از حساب
+            </Button>
+            <p className="text-[9px] text-muted-foreground leading-4">
+              {isAtRestEncryptionAvailable()
+                ? "داده‌های محلی با AES-256-GCM (WebCrypto) رمزنگاری می‌شوند — این محافظت در برابر خواندن مستقیم حافظه مرورگر/WebView است و جایگزین قفل دستگاه یا امنیت سرور نیست."
+                : "رمزنگاری محلی در این مرورگر در دسترس نیست (WebCrypto ناموجود) — داده‌ها بدون رمزنگاری ذخیره می‌شوند."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* تغییر رمز عبور — همه کاربران */}
       <Card>
