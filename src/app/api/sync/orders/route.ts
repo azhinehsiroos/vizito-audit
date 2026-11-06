@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getAuth, forbidden, canSeePurchasePrice, canSeeAllCustomers, csrfGate } from "@/lib/auth";
+import { getOrgLockState, orgLockedResponseDetailed } from "@/lib/license";
 import { dbRateLimit } from "@/lib/rate-limit";
 import { isValidClientRef } from "@/lib/support";
 import { clampNum, strOrNull, strField, inWhitelist, VALID_PRICE_TYPES } from "@/lib/validate";
@@ -15,12 +16,21 @@ export const dynamic = "force-dynamic";
  * پاسخ هر آیتم: { clientRef, orderId?, result: ACCEPTED | DUPLICATE | REJECTED(reason) }
  *
  * قواعد کلیدی سند:
- * - Idempotency: clientRef یکتای سراسری (@unique) — ارسال مجدد ⇒ DUPLICATE با
- *   شناسه موجود؛ هیچ‌گاه دوباره درج نمی‌شود. دستگاه‌های مستقل فقط درج می‌کنند.
+ * - Idempotency: clientRef یکتای سراسری (@unique) — ارسال مجدد همان دستگاه ⇒
+ *   DUPLICATE با شناسه موجود؛ هیچ‌گاه دوباره درج نمی‌شود. دستگاه‌های مستقل فقط درج می‌کنند.
  * - تعارض قیمت: قیمتِ آفلاین با قیمت فعلی کاتالوگ مقایسه می‌شود؛ تفاوت ⇒ سفارش
  *   پذیرفته و needsReview=true + اعلان به مدیران مجموعه (حذف/اصلاح خودکار ممنوع).
- * - بدون قفل لایسنس (بخش ۵٫۴: همگام‌سازی سفارش‌های آفلاین حتی پس از انقضا پذیرفته
- *   می‌شود؛ عملیات مدیریتی جدید جداگانه مسدود می‌ماند).
+ * - بدون قفل «انقضای عادی» لایسنس (بخش ۵٫۴: همگام‌سازی سفارش‌های آفلاین حتی پس از
+ *   انقضا/پایان ترِیال پذیرفته می‌شود؛ عملیات مدیریتی جدید جداگانه مسدود می‌ماند).
+ * - اما «تعلیق امنیتی» (H1 — اصلاح فاز A) از این مسیر دور زده نمی‌شود: سازمان
+ *   تعلیق‌شده روی این اندپوینت هم ۴۰۲ می‌گیرد.
+ * - مجوز ثبت سفارش (H1): کاربر غیرمدیر باید گرنت بخش «سفارشات» داشته باشد —
+ *   همان سیاست requireAuth("orders") در مسیر آنلاین.
+ * - clientRef متعلق به مجموعه دیگر (H2): هیچ اطلاعاتی از سفارش قبلی افشا نمی‌شود
+ *   (بدون orderId) — فقط رد عمومی با reason=duplicate_ref.
+ * - productId بیگانه/حذف‌شده (H3): هرگز ارجاع FK به کالای مجموعه دیگر برقرار
+ *   نمی‌شود — ردیف با اسنپ‌شات نام/قیمت منجمد و productId=null + needsReview ذخیره
+ *   می‌شود (سیاست حفظ اسنپ‌شات مرحله ۹ دستور تجاری؛ حذف خودکار ممنوع — D2).
  * - orgId همیشه از نشست — هرگز از کلاینت. بدون $queryRaw.
  * - لیمیت پایدار DB: ۳۰ در دقیقه برای هر کاربر.
  */
@@ -76,6 +86,25 @@ export async function POST(req: NextRequest) {
       { status: 429, headers: { "Retry-After": "60" } }
     );
   }
+
+  // ── H1: تعلیق امنیتی سازمان از مسیر آفلاین دور زده نمی‌شود ──
+  // فقط فاز SUSPENDED مسدود است؛ انقضای عادی/پایان ترِیال طبق بخش ۵٫۴ معاف می‌ماند
+  // (سفارش‌های از قبل ثبت‌شده‌ی آفلاین پس از انقضا قابل ارسال‌اند — داده هرگز حذف نمی‌شود)
+  const orgLock = await getOrgLockState({
+    id: ctx.org.id,
+    status: ctx.org.status,
+    trialEndsAt: ctx.org.trialEndsAt,
+  });
+  if (orgLock.phase === "SUSPENDED") {
+    return orgLockedResponseDetailed(ctx.org.id, orgLock);
+  }
+
+  // ── H1: مجوز ثبت سفارش — همان سیاست requireAuth("orders") در مسیر آنلاین ──
+  // (برخلاف requireAuth، قفل انقضا اینجا اعمال نمی‌شود — توضیح بالا)
+  if (!ctx.isAdmin && !ctx.sections.includes("orders")) {
+    return forbidden("دسترسی به بخش «سفارشات» برای شما فعال نیست یا منقضی شده است");
+  }
+
   const orgId = ctx.org.id;
   const deviceId = deviceKeyOf(req);
   const purchaseAllowed = canSeePurchasePrice(ctx);
@@ -105,8 +134,10 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // ضد تکرار — اول پیش‌بینی ارزان، سپس گار P2002 برای رقابت هم‌زمان
-    const dup = await db.order.findUnique({ where: { clientRef }, select: { id: true } });
+    // ضد تکرار (H2 — اصلاح فاز A): پیش‌بینی «org-scoped» — فقط سفارشِ همین مجموعه
+    // DUPLICATE با شناسه برمی‌گردد. اگر clientRef متعلق به مجموعه دیگر باشد،
+    // درج با P2002 شکست می‌خورد و در catch بدون هیچ افشایی رد عمومی می‌شود.
+    const dup = await db.order.findFirst({ where: { clientRef, orgId }, select: { id: true } });
     if (dup) {
       results.push({ clientRef, orderId: dup.id, result: "DUPLICATE" });
       continue;
@@ -174,16 +205,22 @@ export async function POST(req: NextRequest) {
       const it = validItems[idx] as Record<string, unknown>;
       const qty = clampNum(it.quantity, 0, 1_000_000);
       const discount = clampNum(it.discount, 0, 100);
-      const productId = strField(it.productId, 40) || null;
+      let productId = strField(it.productId, 40) || null;
       let price = clampNum(it.price, 0, 9_999_999_999);
       let productName = strField(it.productName, 120);
       let volume = strOrNull(it.volume, 40);
       const p = productId ? productMap.get(productId) : undefined;
       if (productId) {
         if (!p) {
-          // کالای حذف‌شده از کاتالوگ پس از ثبت آفلاین — سفارش با قیمت منجمد پذیرفته
-          // می‌شود ولی برای بررسی مدیر علامت می‌خورد (حذف خودکار ممنوع — D2)
+          // H3 (اصلاح فاز A) — کالای ناشناس برای این مجموعه: یا پس از ثبت آفلاین از
+          // کاتالوگ حذف شده یا متعلق به «مجموعه دیگر» است (تفکیک سمت سرور ممکن نیست).
+          // سیاست امن اسنپ‌شات: سفارش با نام/قیمت منجمد کلاینت پذیرفته می‌شود اما
+          // «هرگز» ارجاع FK به کالای مجموعه دیگر برقرار نمی‌شود (productId=null)
+          // و برای بررسی مدیر علامت می‌خورد. قیمت هم مثل ردیف دستی سقف می‌خورد.
+          // حذف خودکار سفارش ممنوع — D2.
           needsReview = true;
+          productId = null;
+          price = Math.min(price, isAdmin ? 9_999_999_999 : MANUAL_PRICE_CAP);
         } else {
           // تعارض قیمت: تفاوت قیمت منجمد دستگاه با کاتالوگ فعلی ⇒ needsReview
           const catalogPrice = p[priceFieldFor(priceType)];
@@ -254,11 +291,15 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
-        const dup2 = await db.order.findUnique({ where: { clientRef }, select: { id: true } });
+        // برخورد unique روی clientRef — فقط اگر تعلق به «همین مجموعه» باشد DUPLICATE معتبر است (H2)
+        const dup2 = await db.order.findFirst({ where: { clientRef, orgId }, select: { id: true } });
         if (dup2) {
           results.push({ clientRef, orderId: dup2.id, result: "DUPLICATE" });
           continue;
         }
+        // clientRef متعلق به مجموعه دیگری است — بدون افشای وجود/شناسه سفارش بیگانه (H2)
+        results.push({ clientRef, result: "REJECTED", reason: "duplicate_ref" });
+        continue;
       }
       console.error("sync order create error", (e as Error)?.name || "unknown");
       results.push({ clientRef, result: "REJECTED", reason: "server" });

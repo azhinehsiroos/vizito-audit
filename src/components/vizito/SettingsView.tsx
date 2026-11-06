@@ -21,7 +21,7 @@ import { Logo } from "@/components/vizito/Logo";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
 import { fileToCompressedDataUrl } from "@/lib/image";
-import { logoutAndClearLocal } from "@/components/vizito/VizitoApp";
+import { performLogout } from "@/components/vizito/VizitoApp";
 import { expiryLabel, toFa, formatJalali } from "@/lib/jalali";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "@/hooks/use-toast";
@@ -176,9 +176,9 @@ export function SettingsView() {
   };
 
   const logout = () => {
-    // ابطال سمت سرور نشست + پاک‌سازی داده محلی مجموعه (حریم خصوصی بخش ۱۰ سند)
-    api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    void logoutAndClearLocal().finally(() => {
+    // C1 (اصلاح فاز A): خروج سفارش‌های همگام‌نشده را حذف نمی‌کند — دیالوگ تأیید هوشمند
+    void performLogout().then((done) => {
+      if (!done) return; // کاربر انصراف داد
       setMe(null);
       setView("dashboard");
     });

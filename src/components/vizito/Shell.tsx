@@ -12,7 +12,7 @@ import { useApp, type ViewKey } from "@/lib/store";
 import { formatJalaliLong, expiryLabel, toFa } from "@/lib/jalali";
 import { SECTIONS } from "@/lib/sections";
 import { api } from "@/lib/api";
-import { logoutAndClearLocal } from "@/components/vizito/VizitoApp";
+import { performLogout } from "@/components/vizito/VizitoApp";
 import {
   LayoutDashboard,
   Users,
@@ -49,7 +49,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme();
-  const { view, setView, me, menuOpen, setMenuOpen, setMe, online, pendingOrders } = useApp();
+  const { view, setView, me, menuOpen, setMenuOpen, setMe, setPendingOrders, online, pendingOrders } = useApp();
   const [supportUnread, setSupportUnread] = useState(0);
 
   // نشان نخواندهٔ پشتیبانی — فقط کاربران مجموعه‌دار؛ بدون polling (در بازشدن منو)
@@ -77,13 +77,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
-    // ابطال سمت سرور نشست (کوکی HttpOnly پاک می‌شود) + پاک‌سازی سمت کلاینت — بدون توکن در JS
-    // حریم خصوصی آفلاین (بخش ۱۰ سند): اسنپ‌شات و صف‌های محلی مجموعه هم کامل پاک می‌شود
-    api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    void logoutAndClearLocal().finally(() => {
+    // C1 (اصلاح فاز A): خروج سفارش‌های همگام‌نشده را حذف نمی‌کند —
+    // در صورت وجود صف، دیالوگ تأیید با شمارش دقیق نشان داده می‌شود
+    void performLogout().then((done) => {
+      if (!done) return; // کاربر انصراف داد — نشست و داده‌ها سر جایشان
       setMe(null);
       setMenuOpen(false);
       setView("dashboard");
+      setPendingOrders(0);
     });
   };
 

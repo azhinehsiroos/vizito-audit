@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { initLocalDbForUser } from "@/lib/idb";
 import { toast } from "@/hooks/use-toast";
 import { Loader2, Sparkles, Lock, User, Building2, KeyRound, Rocket, Eye, EyeOff } from "lucide-react";
 import { useApp } from "@/lib/store";
@@ -122,6 +123,10 @@ export function AuthScreen() {
         isAdmin: boolean;
         isOwner?: boolean;
       }>("/api/auth/me");
+      // C1/H4: DB محلی per-حساب — پیش از ورود به اپ آماده می‌شود تا صف
+      // سفارش‌های همگام‌نشدهِ «همین حساب» (در صورت وجود) بازگردد؛ حساب‌های
+      // دیگر هرگز به DB این حساب دسترسی ندارند
+      await initLocalDbForUser(me.user.id);
       setMe({
         id: me.user.id,
         mobile: me.user.mobile,

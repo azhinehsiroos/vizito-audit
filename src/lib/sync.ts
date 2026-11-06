@@ -15,7 +15,16 @@
  */
 
 import { api } from "@/lib/api";
-import { orderOutboxList, orderOutboxRemove, orderOutboxAdd, outboxList, outboxRemove, snapshotPut, type OrderOutboxItem } from "@/lib/idb";
+import {
+  orderOutboxList,
+  orderOutboxRemove,
+  orderOutboxAdd,
+  outboxList,
+  outboxRemove,
+  snapshotPut,
+  isLocalDbInitialized,
+  type OrderOutboxItem,
+} from "@/lib/idb";
 import type { Customer, ProductGroup } from "@/lib/types";
 
 export type SyncBundle = {
@@ -89,7 +98,9 @@ export async function flushOrderOutbox(): Promise<{ sent: number; remaining: num
                   ? "ردیف‌های سفارش نامعتبر است"
                   : r.reason === "clientRef"
                     ? "شناسه سفارش نامعتبر است"
-                    : "خطای سرور — دوباره تلاش می‌شود";
+                    : r.reason === "duplicate_ref"
+                      ? "شناسه سفارش با سفارش دیگری تداخل دارد — با پشتیبانی تماس بگیرید"
+                      : "خطای سرور — دوباره تلاش می‌شود";
           await orderOutboxAdd({ ...item, syncedAt: null, lastError: reasonFa });
         }
       }
@@ -140,6 +151,19 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let backoffMs = 5_000;
 const BACKOFF_MAX = 5 * 60_000;
 
+/**
+ * نسل همگام‌سازی — با خروج/تعویض حساب افزایش می‌یابد (M7):
+ * چرخه‌ای که در لحظه خروج در جریان است پس از هر مرحله بی‌اثر می‌شود و
+ * دیگر چیزی در صف نمی‌نویسد/زمان‌بند نمی‌گذارد. خودِ صف‌نویسی هم به‌طور
+ * ساختاری پس از reset نام DB (closeLocalDb) بی‌اثر است؛ حتی اگر چیزی لو رفته
+ * باشد، ضدتکرار clientRef سمت سرور از ثبت دوباره جلوگیری می‌کند.
+ */
+let syncGeneration = 0;
+
+export function bumpSyncGeneration() {
+  syncGeneration += 1;
+}
+
 function clearRetry() {
   if (retryTimer !== null) {
     clearTimeout(retryTimer);
@@ -155,11 +179,16 @@ function resetBackoff() {
 export async function runSync(onDone?: (info: { ordersRemaining: number }) => void): Promise<void> {
   if (syncing) return;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  if (!isLocalDbInitialized()) return; // بدون حساب فعال (پیش از ورود/پس از خروج) — M7
+  const gen = syncGeneration;
   syncing = true;
   try {
     await syncBundle();
+    if (gen !== syncGeneration) return; // خروج در میانه چرخه — M7
     await flushOrderOutbox();
+    if (gen !== syncGeneration) return;
     await flushSupportViaSync();
+    if (gen !== syncGeneration) return;
     const [ordersPending, supportPending] = await Promise.all([orderOutboxList(), outboxList()]);
     const remaining = ordersPending.length + supportPending.length;
     clearRetry();
@@ -172,7 +201,7 @@ export async function runSync(onDone?: (info: { ordersRemaining: number }) => vo
     } else {
       resetBackoff();
     }
-    onDone?.({ ordersRemaining: ordersPending.length });
+    if (gen === syncGeneration) onDone?.({ ordersRemaining: ordersPending.length });
   } catch {
     // خطای غیرمنتظره — بی‌صدا؛ تلاش بعدی در رویداد اتصال/بوت
   } finally {

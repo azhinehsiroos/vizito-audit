@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
 import { api } from "@/lib/api";
 import {
-  getDeviceId,
   isOnline,
   onConnectionChange,
   readMeSnapshot,
@@ -15,8 +14,8 @@ import {
   readCachedLicensePhase,
   type OfflineMe,
 } from "@/lib/offline";
-import { orderOutboxList, clearAllLocalData } from "@/lib/idb";
-import { runSync, cancelSyncSchedule } from "@/lib/sync";
+import { orderOutboxList, initLocalDbForUser, closeLocalDb, snapshotDelete } from "@/lib/idb";
+import { runSync, cancelSyncSchedule, bumpSyncGeneration } from "@/lib/sync";
 import { Shell } from "@/components/vizito/Shell";
 import { AuthScreen } from "@/components/vizito/AuthScreen";
 import { Dashboard } from "@/components/vizito/Dashboard";
@@ -39,6 +38,7 @@ import { LicenseScreen, type LicenseState } from "@/components/vizito/LicenseScr
 import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { ShieldOff } from "lucide-react";
+import { toFa } from "@/lib/jalali";
 
 export function VizitoApp() {
   const {
@@ -100,6 +100,12 @@ export function VizitoApp() {
   useEffect(() => {
     if (meId) void loadLicense();
   }, [meId, loadLicense]);
+
+  // پس از ورود/تعویض حساب — شمارنده صف آفلاینِ «همین حساب» تازه می‌شود
+  // (DB محلی per-حساب است؛ پیش از این، initLocalDbForUser اجرا شده است)
+  useEffect(() => {
+    if (meId) void refreshPendingOrders();
+  }, [meId, refreshPendingOrders]);
 
   // ── اتصال/قطعی — وضعیت سراسری + واکنش بازگشت اتصال ──
   useEffect(() => {
@@ -166,6 +172,9 @@ export function VizitoApp() {
             licenseLocked: !!res.licenseLocked,
             trialUntil: res.trialUntil ?? null,
           };
+          // C1/H4: DB محلی به نام «همین حساب» پیش از ورود به اپ آماده می‌شود —
+          // صف سفارش‌های همگام‌نشده قبلی همین حساب (در صورت وجود) بازمی‌گردد
+          await initLocalDbForUser(meObj.id);
           setMe(meObj);
           setOfflineBooted(false);
           void mirrorMe(meObj);
@@ -200,6 +209,8 @@ export function VizitoApp() {
         setAuthLoading(false);
         return;
       }
+      // بوت آفلاین هم DB حساب خودش را پیش از ورود آماده می‌کند (صف‌ها/اسنپ‌شات همان حساب)
+      await initLocalDbForUser(cachedMe.id);
       setMe(cachedMe);
       setOfflineBooted(true);
       setAuthLoading(false);
@@ -321,27 +332,59 @@ export function VizitoApp() {
   return <Shell>{renderView()}</Shell>;
 }
 
-export async function logoutAndClearLocal() {
-  // پاک‌سازی داده محلی مجموعه از دستگاه (حریم خصوصی بخش ۱۰ سند):
-  // صف پیام، صف سفارش‌های آفلاین و کل اسنپ‌شات — پیش از رفرش
-  cancelSyncSchedule();
+/**
+ * خروج از حساب — بازطراحی فاز A (اصلاح C1/M7):
+ * ❌ قبلاً: clearAllLocalData کل صف سفارش‌های همگام‌نشده را نابود می‌کرد.
+ * ✅ حالا: هیچ داده‌ای حذف نمی‌شود؛ فقط چرخه sync در جریان بی‌اثر و آینه
+ * نشست پاک می‌شود. DB محلی «per-حساب» است (idb.ts) — داده‌های این حساب فقط
+ * با ورود مجدد «همین حساب» دوباره در دسترس‌اند و سپس خودکار همگام می‌شوند؛
+ * حساب بعدی هرگز داده‌های حساب قبلی را نمی‌بیند (قانون ۶ مرحله ۸).
+ */
+export async function logoutLocalTeardown() {
+  bumpSyncGeneration(); // M7 — چرخه sync در جریان پس از این مرحله بی‌اثر می‌شود
+  cancelSyncSchedule(); // توقف زمان‌بند بک‌آف
   try {
-    await clearAllLocalData();
+    await snapshotDelete("me"); // فقط آینه نشست — بوت آفلاین بعدی به صفحه ورود می‌رود
   } catch {
-    // پاک‌سازی ناموفق — خروج همچنان انجام می‌شود
+    // بی‌خطر — خروج همچنان انجام می‌شود
   }
+  closeLocalDb(); // reset اشاره‌گر DB — هر عملیات باقی‌مانده بی‌اثر می‌شود
+}
+
+/**
+ * خروج کامل با دیالوگ تأیید هوشمند (C1):
+ * اگر سفارش همگام‌نشده در صف باشد، کاربر با شمارش دقیق مطلع می‌شود که
+ * سفارش‌ها «حذف نمی‌شوند» و پس از ورود مجدد با همان حساب ارسال خواهند شد.
+ * خروجی: false یعنی کاربر انصراف داد.
+ */
+export async function performLogout(): Promise<boolean> {
+  let pending = 0;
+  try {
+    pending = (await orderOutboxList()).length;
+  } catch {
+    pending = 0;
+  }
+  if (pending > 0) {
+    const ok = window.confirm(
+      `${toFa(pending)} سفارش همگام‌نشده روی این دستگاه دارید.\n\n` +
+        `این سفارش‌ها با خروج از حساب حذف نمی‌شوند و پس از ورود مجدد با همین حساب، ` +
+        `خودکار برای سرور ارسال می‌شوند.\n\n` +
+        `خروج از حساب انجام شود؟`
+    );
+    if (!ok) return false;
+  }
+  // ابطال سمت سرور نشست — کوکی HttpOnly خودکار فرستاده و پاک می‌شود
+  api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  await logoutLocalTeardown();
+  return true;
 }
 
 function logoutAndReload() {
-  // ابطال سمت سرور نشست — کوکی HttpOnly خودکار فرستاده و پاک می‌شود (توکن پشتیبان دیگر وجود ندارد)
-  // امنیت: الزام Content-Type: application/json مطابق گیت ضد CSRF سرور
+  // ابطال سمت سرور نشست + teardown محلی — سپس رفرش کامل
   const clear = () => location.reload();
-  fetch("/api/auth/logout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Vizito-Device": getDeviceId() },
-  })
-    .catch(() => {})
+  void performLogout()
+    .catch(() => false)
     .finally(() => {
-      void logoutAndClearLocal().finally(clear);
+      setTimeout(clear, 0);
     });
 }

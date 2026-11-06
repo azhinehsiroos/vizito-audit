@@ -981,6 +981,65 @@ check "دلیل REJECTED بدنه" "body" "$(jget "$R" "d['results'][0]['reason'
 C=$(code 3101 noauth9 POST /api/sync/orders "{}")
 check "sync/orders بدون نشست (401)" "401" "$C"
 
+# ── فاز A (اصلاح ممیزی): H1 گرنت بخش + تعلیق + H2 افشای clientRef + H3 ارجاع بیگانه ──
+# H1 — کاربر غیرمدیر بدون گرنت «سفارشات» از مسیر آفلاین سفارش نمی‌تواند ثبت کند
+NOSYNC_MOBILE="0944$(shuf -i 1000000-9999999 -n 1)"
+R=$(rq 3101 orgh POST /api/users "{\"mobile\":\"$NOSYNC_MOBILE\",\"name\":\"پرسنل بدون سفارش\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"dashboard\"],\"durationHours\":null}")
+contains "فاز A: ساخت پرسنل بدون گرنت سفارش" '"id"' "$R"
+rq 3101 noord POST /api/auth/login "{\"mobile\":\"$NOSYNC_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+C=$(code 3101 noord POST /api/sync/orders "{\"orders\":[]}")
+check "H1: sync/orders بدون گرنت سفارش (403)" "403" "$C"
+# H1 — تعلیق امنیتی از مسیر sync دور زده نمی‌شود (انقضای عادی طبق ۵.۴ معاف می‌ماند)
+rq 3101 owner POST /api/sa/license "{\"action\":\"suspend\",\"orgId\":\"$ORGC_ORG\"}" >/dev/null
+SO_SUSP="$(uuid4)"
+C=$(code 3101 orgc POST /api/sync/orders "{\"orders\":[{\"clientRef\":\"$SO_SUSP\",\"customerId\":\"custsync-ctrl\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"x\",\"quantity\":1,\"price\":1}]}]}")
+check "H1: sync/orders برای مجموعه تعلیق‌شده (402)" "402" "$C"
+R=$(curl -s --max-time 15 -X POST -b "$(cj orgc)" -c "$(cj orgc)" -H 'Content-Type: application/json' -d "{\"orders\":[{\"clientRef\":\"$SO_SUSP\",\"customerId\":\"custsync-ctrl\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"x\",\"quantity\":1,\"price\":1}]}]}" "http://127.0.0.1:3101/api/sync/orders")
+check "H1: فاز قفل = SUSPENDED" "SUSPENDED" "$(jget "$R" "d.get('lockPhase')")"
+rq 3101 owner POST /api/sa/license "{\"action\":\"resume\",\"orgId\":\"$ORGC_ORG\"}" >/dev/null
+# H2 — clientRef متعلق به مجموعه دیگر: رد عمومی، بدون افشای وجود/شناسه سفارش بیگانه
+R=$(curl -s --max-time 15 -X POST -b "$(cj orgc)" -c "$(cj orgc)" -H 'Content-Type: application/json' -d "{\"orders\":[{\"clientRef\":\"$SO1\",\"customerId\":\"custsync-ctrl\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"x\",\"quantity\":1,\"price\":1}]}]}" "http://127.0.0.1:3101/api/sync/orders")
+check "H2: clientRef مجموعه دیگر ⇒ REJECTED" "REJECTED" "$(jget "$R" "d['results'][0]['result']")"
+check "H2: دلیل = duplicate_ref" "duplicate_ref" "$(jget "$R" "d['results'][0]['reason']")"
+check "H2: هیچ orderId از سفارش بیگانه افشا نشد" "None" "$(jget "$R" "d['results'][0].get('orderId')")"
+R2=$(rq 3101 orgh GET /api/orders)
+check "H2: سفارش اصلی مجموعه مالک دست‌نخورده" "1" "$(jget "$R2" "sum(1 for o in d if o['clientRef']=='$SO1')")"
+# H3a — productId متعلق به مجموعه دیگر: پذیرش با اسنپ‌شات منجمد، هرگز ارجاع FK (حتی برای مدیر مجموعه منقضه)
+SO_H3A="$(uuid4)"
+R=$(curl -s --max-time 15 -X POST -b "$(cj orgc)" -c "$(cj orgc)" -H 'Content-Type: application/json' -d "{\"orders\":[{\"clientRef\":\"$SO_H3A\",\"customerId\":\"custsync-ctrl\",\"priceType\":\"STORE\",\"items\":[{\"productId\":\"$SYNC_PROD\",\"productName\":\"کالای بیگانه\",\"quantity\":1,\"price\":123456,\"discount\":0}]}]}" "http://127.0.0.1:3101/api/sync/orders")
+check "H3: سفارش با productId بیگانه پذیرفته می‌شود (اسنپ‌شات — D2)" "ACCEPTED" "$(jget "$R" "d['results'][0]['result']")"
+H3A_CHECK=$(node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBB');
+const r=d.prepare('SELECT oi.productId AS pid, o.needsReview AS nr FROM OrderItem oi JOIN \"Order\" o ON o.id=oi.orderId WHERE o.clientRef=?').get('$SO_H3A');
+if(!r){console.log('missing')}else{console.log((r.pid===null?'1':'0')+'|'+((r.nr===1||r.nr===true)?'1':'0'))}
+" 2>/dev/null)
+check "H3: productId=NULL در DB + needsReview=1" "1|1" "$H3A_CHECK"
+# H3b — سقف قیمت ردیف ناشناس برای پرسنل غیرمدیر (جلوگیری از تزریق قیمت با productId جعلی)
+# توجه: قانون مسیر آنلاین در sync هم برقرار است — کاربر عادی فقط برای مشتریِ «ساختهٔ خودش» سفارش ثبت می‌کند؛
+# پس پرسنل ابتدا مشتری خودش را می‌سازد (بخش customers هم به او گرنت شده)
+SYNCSTAFF_MOBILE="0945$(shuf -i 1000000-9999999 -n 1)"
+R=$(rq 3101 orgh POST /api/users "{\"mobile\":\"$SYNCSTAFF_MOBILE\",\"name\":\"پرسنل سفارش\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"orders\",\"dashboard\"],\"durationHours\":null}")
+contains "H3: ساخت پرسنل با گرنت سفارش" '"id"' "$R"
+rq 3101 syncstaff POST /api/auth/login "{\"mobile\":\"$SYNCSTAFF_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+R=$(rq 3101 syncc POST /api/groups "{\"name\":\"گروه بیگانه\"}")
+FCAP_GRP=$(jget "$R" "d['id']")
+R=$(rq 3101 syncc POST /api/products "{\"groupId\":\"$FCAP_GRP\",\"name\":\"کالای بیگانه سقف\",\"priceStore\":777000,\"pricePharmacy\":0,\"priceSalon\":0}")
+FCAP_PROD=$(jget "$R" "d['id']")
+R=$(rq 3101 syncstaff POST /api/customers "{\"name\":\"مشتری پرسنل\",\"phone\":\"0912$(shuf -i 1000000-9999999 -n 1)\",\"type\":\"STORE\"}")
+STAFF_CUST=$(jget "$R" "d['id']")
+contains "H3: پرسنل مشتری خودش را ساخت" '"id"' "$R"
+SO_H3B="$(uuid4)"
+R=$(curl -s --max-time 15 -X POST -b "$(cj syncstaff)" -c "$(cj syncstaff)" -H 'Content-Type: application/json' -d "{\"orders\":[{\"clientRef\":\"$SO_H3B\",\"customerId\":\"$STAFF_CUST\",\"priceType\":\"STORE\",\"items\":[{\"productId\":\"$FCAP_PROD\",\"productName\":\"جعل قیمت\",\"quantity\":1,\"price\":2000000000,\"discount\":0}]}]}" "http://127.0.0.1:3101/api/sync/orders")
+check "H3: ردیف بیگانه از پرسنل پذیرفته شد (اسنپ‌شات)" "ACCEPTED" "$(jget "$R" "d['results'][0]['result']")"
+H3B_CHECK=$(node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBB');
+const r=d.prepare('SELECT oi.productId AS pid, oi.price AS pr FROM OrderItem oi JOIN \"Order\" o ON o.id=oi.orderId WHERE o.clientRef=?').get('$SO_H3B');
+if(!r){console.log('missing')}else{console.log((r.pid===null?'1':'0')+'|'+(Math.round(r.pr)===1000000000?'1':'0'))}
+" 2>/dev/null)
+check "H3: productId=NULL + سقف قیمت دستی (۱ میلیارد) اعمال شد" "1|1" "$H3B_CHECK"
+
 echo "== ۱۴٫۱۰) بکاپ/بازیابی — Restore دومرحله‌ای (بخش دهم سند طراحی) =="
 # ── آماده‌سازی: پرسنلِ داخل مجموعه — نشستش باید پس از بازیابی باطل شود ──
 ORGSTAFF_MOBILE="0943$(shuf -i 1000000-9999999 -n 1)"
