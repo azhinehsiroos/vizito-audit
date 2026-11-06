@@ -52,10 +52,19 @@ export async function POST(req: NextRequest) {
     return tooMany(retryAfterSeconds(key), "تعداد پشتیبان‌گیری‌های دستی زیاد است — کمی بعد دوباره تلاش کنید");
   }
   try {
+    // فاز D — «مجموعه من»: پیش‌فرض، بکاپ سازنده هم مثل مدیر مجموعه محدود به مجموعه خودش است؛
+    // بکاپ FULL (کل سرور) ابزار زیرساختی سازنده می‌ماند — فقط با opt-in صریح
+    // {"scope":"FULL"} و فقط برای نقش SUPER_ADMIN (حتی وقتی «مجموعه من» دارد) —
+    // با همان حسابرسی BACKUP_FULL. مدیر مجموعه هرگز FULL نمی‌تواند بگیرد.
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.scope === "FULL" && !auth.ctx.isSuperAdmin) {
+      return forbidden("بکاپ کامل سرور فقط توسط سازنده برنامه امکان‌پذیر است");
+    }
+    const full = body.scope === "FULL" && auth.ctx.isSuperAdmin;
     // چندمجموعه‌ای: بکاپ مدیر مجموعه فقط شامل داده‌های مجموعه خودش است
-    const row = await createBackup("MANUAL", { id: auth.ctx.user.id, name: auth.ctx.user.name }, auth.ctx.org ? auth.ctx.org.id : null);
+    const row = await createBackup("MANUAL", { id: auth.ctx.user.id, name: auth.ctx.user.name }, full ? null : auth.ctx.org ? auth.ctx.org.id : null);
     // M3: بکاپ FULL توسط سازنده (کل نصب) — حسابرسی fail-closed
-    if (!auth.ctx.org) {
+    if (full) {
       await logSaAccess(auth.ctx.user.id, auth.ctx.user.name, null, "BACKUP_FULL", req, `backup=${row.id.slice(0, 12)}`);
     }
     return Response.json({

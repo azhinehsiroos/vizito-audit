@@ -473,7 +473,7 @@ kill $A_PID 2>/dev/null
 echo "############ سرور B — با مالک (امکانات مالک) ############"
 OWNER2_MOBILE="0918$(shuf -i 1000000-9999999 -n 1)" # شماره فریبنده برای سناریوهای منفی مالک (هرگز حساب نمی‌سازد)
 DBB="$TMP/b.db"
-B_PID=$(start_server b 3101 "$DBB" OWNER_MOBILES="$OWNER_MOBILE,$OWNER2_MOBILE") || exit 1
+B_PID=$(start_server b 3101 "$DBB" OWNER_MOBILES="$OWNER_MOBILE,$OWNER2_MOBILE" VIZITO_VENDOR_ORG_NAME="آژیوان سروش آزمون") || exit 1
 wait_up 3101 && ok "سرور B آماده شد" || { bad "سرور B بالا نیامد"; tail -15 "$TMP/b.log"; exit 1; }
 
 echo "== ۱۰−) سناریوهای امنیتی ثبت‌نام مالک =="
@@ -489,9 +489,34 @@ check "سازنده بدون مجموعه است (orgId=null)" "None" "$(jget "$
 rq 3101 owner POST /api/auth/login "{\"mobile\":\"$OWNER_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 R=$(rq 3101 owner GET /api/auth/me)
 check "isOwner" "True" "$(jget "$R" "d['isOwner']")"
-# M1: سازنده دیگر از مسیر عادی کاربران، پرسنل نمی‌سازد (تنها راه دید داده: /api/sa/* با حسابرسی)
-C=$(code 3101 owner POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل B\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"dashboard\"],\"durationHours\":null}")
-check "M1: ساخت پرسنل توسط سازنده از مسیر عادی رد (403)" "403" "$C"
+# ── فاز D — «مجموعه من» سازنده: بوت‌استرپ idempotent در اولین /api/auth/me ──
+VENDOR_ORG_ID=$(jget "$R" "d['org']['id']")
+check "فاز D: بوت‌استرپ «مجموعه من» در me (orgName)" "آژیوان سروش آزمون" "$(jget "$R" "d['orgName']")"
+VENDOR_DB_CHECK=$(node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBB');
+const lic=d.prepare('SELECT plan,status,source,expiresAt FROM License WHERE orgId=?').get('$VENDOR_ORG_ID');
+const ev=d.prepare(\"SELECT COUNT(*) AS c FROM LicenseEvent WHERE orgId=? AND type='ISSUE'\").get('$VENDOR_ORG_ID');
+const al=d.prepare(\"SELECT COUNT(*) AS c FROM AdminAccessLog WHERE orgId=? AND action='VENDOR_ORG_BOOTSTRAP'\").get('$VENDOR_ORG_ID');
+if(!lic){console.log('missing')}else{console.log((lic.plan==='PERM'?'1':'0')+'|'+(lic.status==='ACTIVE'?'1':'0')+'|'+(lic.source==='VENDOR'?'1':'0')+'|'+(lic.expiresAt===null?'1':'0')+'|'+(ev.c>=1?'1':'0')+'|'+(al.c>=1?'1':'0'))}
+" 2>/dev/null)
+check "فاز D: لایسنس PERM/ACTIVE/source=VENDOR/بدون انقضا + رویداد + حسابرسی" "1|1|1|1|1|1" "$VENDOR_DB_CHECK"
+R=$(rq 3101 owner GET /api/auth/me)
+check "فاز D: idempotent — دومین me همان مجموعه" "$VENDOR_ORG_ID" "$(jget "$R" "d['org']['id']")"
+VENDOR_ORG_COUNT=$(node -e "
+const {DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$DBB');
+console.log(d.prepare(\"SELECT COUNT(*) AS c FROM Org WHERE name='آژیوان سروش آزمون'\").get().c);
+" 2>/dev/null)
+check "فاز D: فقط یک مجموعه سازنده ساخته شد" "1" "$VENDOR_ORG_COUNT"
+# M1 (حفظ فاز B): سازنده «بدون مجموعه» (تا پیش از اولین me) از مسیر عادی رد می‌شود
+R=$(rq 3101 none POST /api/auth/register "{\"mobile\":\"$OWNER2_MOBILE\",\"name\":\"سازنده دوم\",\"password\":\"$PASSWORD\",\"setupKey\":\"$OWNER_SETUP_KEY\"}")
+check "فاز D: سازنده دوم با کلید درست → SUPER_ADMIN" "SUPER_ADMIN" "$(jget "$R" "d['user']['role']")"
+rq 3101 owner2 POST /api/auth/login "{\"mobile\":\"$OWNER2_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
+C=$(code 3101 owner2 POST /api/users "{\"mobile\":\"$STAFF_MOBILE\",\"name\":\"پرسنل B\",\"password\":\"$PASSWORD\",\"sections\":[\"customers\",\"dashboard\"],\"durationHours\":null}")
+check "M1: ساخت پرسنل توسط سازندهٔ بدون مجموعه از مسیر عادی رد (403)" "403" "$C"
+R=$(rq 3101 owner2 GET /api/auth/me)
+check "فاز D: سازنده دوم به «همان» مجموعه سازنده پیوست" "$VENDOR_ORG_ID" "$(jget "$R" "d['org']['id']")"
 # M8: چرخه کد دعوت — فقط سازنده؛ ثبت‌نام با کد معتبر همچنان کار می‌کند
 rq 3101 owner POST /api/settings/invite '{}' >/dev/null
 INVITE=$(jget "$(rq 3101 owner GET /api/settings)" "d['inviteCode']")
@@ -562,6 +587,7 @@ check "ثبت‌نام مجدد مالک با کلید درست → ارتقای
 rq 3101 owner POST /api/auth/login "{\"mobile\":\"$OWNER_MOBILE\",\"password\":\"$PASSWORD\"}" >/dev/null
 R=$(rq 3101 owner GET /api/auth/me)
 check "نشست تازه مالک پس از ارتقا برقرار است (isOwner)" "True" "$(jget "$R" "d['isOwner']")"
+check "فاز D: پس از بازسازی مالک، «مجموعه من» حفظ شد (orgId ثابت)" "$VENDOR_ORG_ID" "$(jget "$R" "d['org']['id']")"
 # M1: شمارش از DB مستقیم — سازنده به مسیر عادی کاربران دسترسی ندارد
 OWNER_COUNT=$(node -e "
 const {DatabaseSync}=require('node:sqlite');
@@ -874,7 +900,18 @@ check "ثبت مجدد همان دستگاه = به‌روزرسانی (همان
 C=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST -b "$(cj orgh)" -c "$(cj orgh)" -H 'text/plain' -H "X-Vizito-Device: $DEV_KEY" -d '{}' "http://127.0.0.1:3101/api/device")
 check "گیت ضد CSRF روی ثبت دستگاه (403)" "403" "$C"
 R=$(rq 3101 owner POST /api/device "{}")
-contains "ثبت دستگاه برای سازنده بدون مجموعه (403)" "مجموعه‌دار" "$R"
+contains "فاز D: ثبت دستگاه بدون شناسه برای سازنده رد شد (شناسه نامعتبر)" "شناسه دستگاه نامعتبر" "$R"
+# فاز D: سازندهِ دارای «مجموعه من» دستگاهش در همان مجموعه ثبت می‌شود
+VDEV="e2e-vendor-dev-$(openssl rand -hex 4)"
+R=$(curl -s --max-time 15 -X POST -b "$(cj owner)" -c "$(cj owner)" -H 'Content-Type: application/json' -H "X-Vizito-Device: $VDEV" -d '{"label":"دستگاه مجموعه من"}' "http://127.0.0.1:3101/api/device")
+check "فاز D: ثبت دستگاه برای «مجموعه من» سازنده (ok)" "True" "$(jget "$R" "d.get('ok')")"
+VDEV_ORG=$(python3 -c "
+import sqlite3
+con=sqlite3.connect('file:$DBB?mode=ro',uri=True)
+row=con.execute(\"select o.name from Device d join Org o on o.id=d.orgId where d.deviceKey=?\",('$VDEV',)).fetchone()
+print(row[0] if row else 'MISSING')
+")
+check "فاز D: دستگاه سازنده در «مجموعه من» ثبت شد" "آژیوان سروش آزمون" "$VDEV_ORG"
 # اسکوپ مجموعه در DB — orgId دستگاه باید برابر مجموعه «مجموعه لایسنس» باشد (نه از کلاینت)
 DEV_ORG=$(python3 -c "
 import sqlite3
@@ -896,7 +933,9 @@ echo "== ۱۴٫۹) همگام‌سازی چنددستگاهی — /api/sync/* (�
 C=$(code 3101 noauth9 GET /api/sync/bundle)
 check "باندل بدون نشست (401)" "401" "$C"
 C=$(code 3101 owner GET /api/sync/bundle)
-check "باندل برای سازنده بدون مجموعه (403)" "403" "$C"
+check "فاز D: باندل سازنده = «مجموعه من» (۲۰۰)" "200" "$C"
+R=$(rq 3101 owner GET /api/sync/bundle)
+check "فاز D: باندل سازنده نام مجموعه من" "آژیوان سروش آزمون" "$(jget "$R" "d['org']['name']")"
 R=$(rq 3101 orgh GET /api/sync/bundle)
 check "باندل موفق — آرایه مشتریان/گروه‌ها" "True" "$(jget "$R" "isinstance(d['customers'],list) and isinstance(d['groups'],list)")"
 check "باندل: نام مجموعه از نشست" "مجموعه لایسنس" "$(jget "$R" "d['org']['name']")"
@@ -1049,15 +1088,28 @@ if(!r){console.log('missing')}else{console.log((r.pid===null?'1':'0')+'|'+(Math.
 " 2>/dev/null)
 check "H3: productId=NULL + سقف قیمت دستی (۱ میلیارد) اعمال شد" "1|1" "$H3B_CHECK"
 
-# ── فاز B (اصلاح ممیزی): M1 بستن مسیر عادی برای سازنده + M8 کد دعوت + M3 حسابرسی ──
+# ── فاز D: «مجموعه من» سازنده — دسترسی مجموعه‌ای + جداسازی کامل بین مجموعه‌ها ──
+R=$(rq 3101 owner POST /api/customers "{\"name\":\"مشتری مجموعه من\",\"phone\":\"09120009997\",\"type\":\"STORE\"}")
+VENDOR_CUST=$(jget "$R" "d['id']")
+check "فاز D: سازنده مشتری «مجموعه من» را ثبت کرد" "True" "$(jget "$R" "bool(d.get('id'))")"
 C=$(code 3101 owner GET /api/customers)
-check "M1: سازنده از مسیر عادی مشتریان مسدود (403)" "403" "$C"
-C=$(code 3101 owner GET /api/users)
-check "M1: سازنده از مسیر عادی کاربران مسدود (403)" "403" "$C"
-C=$(code 3101 owner GET /api/reports/summary)
-check "M1: سازنده از مسیر عادی گزارش مسدود (403)" "403" "$C"
-C=$(code 3101 owner POST /api/orders "{}")
-check "M1: سازنده از مسیر عادی ثبت سفارش مسدود (403)" "403" "$C"
+check "فاز D: سازنده به فهرست مشتریان مجموعه خودش می‌رسد (200)" "200" "$C"
+R=$(rq 3101 orgh GET /api/customers)
+check "فاز D: مشتری سازنده در فهرست مجموعه دیگر نیست" "True" "$(jget "$R" "all(c['id']!='$VENDOR_CUST' for c in d)")"
+C=$(code 3101 orgh GET "/api/customers/$VENDOR_CUST")
+check "فاز D: مجموعه دیگر مشتری سازنده را ۴۰۴ می‌بیند" "404" "$C"
+C=$(code 3101 owner GET "/api/customers/$SYNC_CUST")
+check "فاز D: مشتری مجموعه دیگر برای سازنده ۴۰۴ است" "404" "$C"
+R=$(rq 3101 owner GET /api/users)
+check "فاز D: کاربر مجموعه دیگر در فهرست کاربران سازنده نیست" "True" "$(jget "$R" "all(u['mobile']!='$ORGT_MOBILE' for u in d)")"
+check "فاز D: سازنده دوم در کاربران «مجموعه من» هست" "True" "$(jget "$R" "any(u['mobile']=='$OWNER2_MOBILE' for u in d)")"
+R=$(rq 3101 owner GET /api/reports/summary)
+check "فاز D: گزارش مجموعه سازنده — شمارش مشتری ≥۱" "True" "$(jget "$R" "d['customerCount']>=1")"
+R=$(rq 3101 owner POST /api/orders "{\"customerId\":\"$VENDOR_CUST\",\"priceType\":\"STORE\",\"items\":[{\"productName\":\"کالای مجموعه من\",\"quantity\":1,\"price\":100000,\"discount\":0}]}")
+check "فاز D: ثبت سفارش آنلاین در «مجموعه من»" "True" "$(jget "$R" "bool(d.get('id'))")"
+R=$(rq 3101 owner GET /api/sync/bundle)
+check "فاز D: باندل همگام‌سازی «مجموعه من»" "آژیوان سروش آزمون" "$(jget "$R" "d['org']['name']")"
+check "فاز D: لایسنس «مجموعه من» در باندل دائمی است" "True" "$(jget "$R" "d['license']['permanent']")"
 C=$(code 3101 orgh GET /api/customers)
 check "M1: مدیر مجموعه همچنان به داده خودش می‌رسد (200)" "200" "$C"
 C=$(code 3101 orgh GET /api/settings/invite)
@@ -1149,7 +1201,14 @@ R2=$(rq 3101 orgh GET /api/customers)
 check "بازیابی از فایل: مشتری دوم غیب شد" "True" "$(jget "$R2" "not any(c['id']=='$EXTRA2_CUST' for c in d)")"
 
 # ── FULL — فقط سازنده؛ جایگزینی کامل سرور با تأیید «بازیابی کامل» ──
+# فاز D: بکاپ پیش‌فرض سازنده محدود به «مجموعه من» است؛ FULL فقط با opt-in صریح
 R=$(rq 3101 owner POST /api/backups)
+RB_VORG=$(jget "$R" "d['backup']['id']")
+R=$(rq 3101 owner POST /api/backups/restore/preview "{\"id\":\"$RB_VORG\"}")
+check "فاز D: بکاپ پیش‌فرض سازنده محدود به «مجموعه من» (scope=ORG)" "ORG" "$(jget "$R" "d['scope']")"
+C=$(code 3101 orgh POST /api/backups '{"scope":"FULL"}')
+check "فاز D: درخواست بکاپ FULL توسط مدیر مجموعه رد (403)" "403" "$C"
+R=$(rq 3101 owner POST /api/backups '{"scope":"FULL"}')
 RB_FULL=$(jget "$R" "d['backup']['id']")
 contains "بکاپ کامل سرور توسط سازنده ساخته شد" '"id"' "$R"
 ORGN=$(jget "$(rq 3101 owner GET /api/sa/orgs)" "len(d['orgs'])")

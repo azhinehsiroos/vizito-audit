@@ -8,7 +8,8 @@ export async function GET(req: NextRequest) {
   const auth = await requireAuth(req, "users");
   if ("error" in auth) return auth.error;
   if (!auth.ctx.isAdmin) return forbidden("فقط مدیر به این بخش دسترسی دارد");
-  // چندمجموعه‌ای: مدیر فقط کاربران مجموعه خودش؛ سازنده (بدون مجموعه) همه را می‌بیند
+  // چندمجموعه‌ای: مدیر فقط کاربران مجموعه خودش؛ سازنده «بدون مجموعه» پیش‌تر در M1 مسدود است
+  // (فاز D: سازندهِ دارای «مجموعه من» هم فقط کاربران همان مجموعه را می‌بیند)
   const users = await db.user.findMany({
     where: auth.ctx.org ? { orgId: auth.ctx.org.id } : {},
     include: { grants: { orderBy: { createdAt: "desc" } } },

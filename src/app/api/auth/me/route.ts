@@ -2,11 +2,19 @@ import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getAuth, unauthorized, csrfGate, isUserLicenseLocked } from "@/lib/auth";
 import { isOwnerMobile } from "@/lib/license";
+import { ensureVendorOrg } from "@/lib/vendor-org";
 import { strField } from "@/lib/validate";
 
 export async function GET(req: NextRequest) {
-  const ctx = await getAuth(req);
+  let ctx = await getAuth(req);
   if (!ctx) return unauthorized();
+  // ── فاز D — بوت‌استرپ idempotent «مجموعه من» سازنده (مرحله ۲ دستور تجاری) ──
+  // سازنده بدون مجموعه ⇒ مجموعه یکتا + لایسنس PERM + اتصال (اتمیک در vendor-org.ts).
+  // اگر وضعیت عوض شد، ctx با خوانش دوباره تازه می‌شود تا پاسخ من (orgName) درست باشد.
+  if (ctx.isSuperAdmin) {
+    const ensured = await ensureVendorOrg(ctx.user.id);
+    if (ensured?.changed) ctx = (await getAuth(req)) ?? ctx;
+  }
   // سازنده برنامه — فقط برای نمایش بخش «فروش لایسنس» در منو
   // licenseLocked: آیا «این کاربر» با قفل لایسنس مواجه است؟ (سازنده همیشه آزاد؛ بقیه تابع وضعیت مجموعه)
   const licenseLocked = await isUserLicenseLocked(ctx);

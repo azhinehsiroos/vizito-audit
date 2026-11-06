@@ -60,17 +60,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, [menuOpen, me?.orgName]);
 
-  // M1 (اصلاح فاز B): حساب سازنده (SUPER_ADMIN بدون مجموعه) آیتم‌های داده تجاری سازمانی
-  // را در منو نمی‌بیند — داده مجموعه‌ها فقط از «مدیریت کل» (مسیرهای audited) قابل مشاهده است
-  const isSuperView = !!me && (me.isOwner || me.role === "SUPER_ADMIN");
+  // M1 (فاز B) + فاز D — «مجموعه من»: حساب سازنده «بدون مجموعه» آیتم‌های داده تجاری
+  // سازمانی را در منو نمی‌بیند (فقط «مدیریت کل»)؛ سازندهِ دارای مجموعه مانند مدیر
+  // مجموعه همان آیتم‌ها را برای مجموعه خودش می‌بیند + «مدیریت کل» همیشه در دسترس است
+  const isSuperNoOrg =
+    !!me && (me.isOwner || me.role === "SUPER_ADMIN") && !me.orgName;
   const available = SECTIONS.filter((s) => {
-    if (isSuperView && ["customers", "products", "orders", "reports", "catalogs", "users"].includes(s.key)) return false;
+    if (isSuperNoOrg && ["customers", "products", "orders", "reports", "catalogs", "users"].includes(s.key)) return false;
     if (s.key === "users") return me?.isAdmin;
     return me ? me.isAdmin || me.sections.includes(s.key) : false;
   });
 
   const bottomItems: { key: ViewKey; label: string; icon: React.ComponentType<{ className?: string }>; section: string }[] = (
-    isSuperView
+    isSuperNoOrg
       ? [
           { key: "dashboard", label: "خانه", icon: House, section: "dashboard" },
         ]

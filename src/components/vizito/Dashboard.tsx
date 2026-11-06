@@ -26,8 +26,12 @@ type Summary = {
 export function Dashboard() {
   const { setView, me, online } = useApp();
   const [summary, setSummary] = useState<Summary | null>(null);
-  // M1 (اصلاح فاز B): حساب سازنده — آمار «مجموعه‌ای» معنی ندارد؛ هدایت به پنل مدیریت کل
-  const isSuperView = !!(me?.isOwner || me?.role === "SUPER_ADMIN");
+  // M1 (اصلاح فاز B) + فاز D — «مجموعه من»:
+  //  - سازنده «بدون مجموعه»: آمار تجاری معنی ندارد — هدایت به پنل مدیریت کل
+  //  - سازنده «دارای مجموعه من»: داشبورد تجاری مجموعه خودش + کارت «مجموعه من»
+  const isSuperNoOrg = !!(me?.isOwner || me?.role === "SUPER_ADMIN") && !me?.orgName;
+  const isVendorWithOrg =
+    !!(me?.isOwner || me?.role === "SUPER_ADMIN") && !!me?.orgName;
 
   useEffect(() => {
     api<Summary>("/api/reports/summary")
@@ -90,8 +94,25 @@ export function Dashboard() {
         </CardContent>
       </Card>
 
-      {/* M1: نمای اختصاصی سازنده — بدون آمار تجاری مجموعه‌ای */}
-      {isSuperView ? (
+      {/* فاز D — کارت «مجموعه من» سازنده: هویت مجموعه + مسیر بازگشت به مدیریت کل */}
+      {isVendorWithOrg && (
+        <Card className="border-primary/20">
+          <CardContent className="p-4 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] text-muted-foreground">مجموعه من</p>
+              <h3 className="font-bold text-sm truncate">{me?.orgName}</h3>
+              <p className="text-[11px] text-muted-foreground mt-0.5">لایسنس دائمی سازنده — داده این مجموعه فقط از همین حساب قابل مشاهده است</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setView("super-admin")}>
+              <ShieldCheck className="h-4 w-4" />
+              مدیریت کل
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* M1: نمای اختصاصی سازنده بدون مجموعه — بدون آمار تجاری مجموعه‌ای */}
+      {isSuperNoOrg ? (
         <Card className="border-primary/30">
           <CardContent className="p-5 text-center space-y-3">
             <ShieldCheck className="h-10 w-10 text-primary/60 mx-auto" />

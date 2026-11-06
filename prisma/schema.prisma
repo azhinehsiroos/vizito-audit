@@ -339,7 +339,7 @@ model License {
   startsAt       DateTime  @default(now())
   expiresAt      DateTime? // null فقط برای PERM (دائمی)
   status         String    @default("ACTIVE") // ACTIVE | SUSPENDED
-  source         String    @default("KEY") // KEY (کلید امضاشده) | ADMIN (صدور مستقیم سازنده) | MIGRATION
+  source         String    @default("KEY") // KEY (کلید امضاشده) | ADMIN (صدور مستقیم سازنده) | MIGRATION | VENDOR (بوت‌استرپ «مجموعه من» سازنده — فاز D)
   currentKeyHash String? // SHA-256 کلید فعال — ضد استفاده مجدد همان کلید برای مجموعه دیگر
   note           String?
   maxUsers       Int? // آماده‌سازی آینده — اجرا نمی‌شود (طبق سند تا تأیید کارفرما)

@@ -169,8 +169,13 @@ export async function readRestoreSource(opts: {
   let text = "";
   if (opts.id) {
     const row = await db.backup.findUnique({ where: { id: opts.id } });
-    // چندمجموعه‌ای: مدیر مجموعه فقط بکاپ مجموعه خودش؛ بکاپ کامل سرور (orgId=null) هم ۴۰۴
-    if (!row || (opts.ctxOrgId && row.orgId !== opts.ctxOrgId) || (!opts.ctxOrgId && !opts.isSuperAdmin)) {
+    // چندمجموعه‌ای: مدیر مجموعه فقط بکاپ مجموعه خودش؛ بکاپ کامل سرور (orgId=null)
+    // برای سازنده همیشه در دسترس است — حتی وقتی «مجموعه من» دارد (فاز D)
+    if (
+      !row ||
+      (opts.ctxOrgId && row.orgId !== opts.ctxOrgId && !(opts.isSuperAdmin && row.orgId === null)) ||
+      (!opts.ctxOrgId && !opts.isSuperAdmin)
+    ) {
       return notFound();
     }
     const p = safeBackupPath(row.fileName);

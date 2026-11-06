@@ -134,11 +134,13 @@ export async function POST(req: NextRequest) {
       db.$transaction(async (tx) => {
       const exists = await tx.user.findUnique({ where: { mobile } });
 
-      // سازنده با کلید معتبر: ارتقای اتمیک حساب موجود به SUPER_ADMIN (خارج از همه مجموعه‌ها)
+      // سازنده با کلید معتبر: ارتقای اتمیک حساب موجود به SUPER_ADMIN
+      // (فاز D: اگر همین حساب قبلاً مجموعه‌ای داشت — مثلاً «مجموعه من» — ارتقا
+      // آن را نمی‌تراشد؛ orgId قبلی حفظ می‌شود و بوت‌استرپ /me لایسنسش را تضمین می‌کند)
       if (exists && ownerSetupOk) {
         const updated = await tx.user.update({
           where: { id: exists.id },
-          data: { role: "SUPER_ADMIN", orgId: null, name, company, password: passwordHash },
+          data: { role: "SUPER_ADMIN", orgId: exists.orgId, name, company, password: passwordHash },
         });
         // امنیت: رمز عوض شد ⇒ همه نشست‌های قبلی این حساب ابطال شود
         await tx.authSession.deleteMany({ where: { userId: exists.id } });
@@ -199,7 +201,8 @@ export async function POST(req: NextRequest) {
       // ── چندمجموعه‌ای (SaaS): هر ثبت‌نام آزاد = «مجموعه مستقل» + مدیر همان مجموعه +
       // تریال دقیقاً ۲۴ساعته مجموعه (نوشته سمت سرور، فقط همین‌جا، غیرقابل تمدید —
       // موبایل یکتا + لیمیت‌های ثبت‌نام جلوی تکرار را می‌گیرند).
-      // سازنده (OWNER_SETUP_KEY) بدون مجموعه و همیشه آزاد ثبت می‌شود.
+      // سازنده (OWNER_SETUP_KEY) بدون مجموعه ثبت می‌شود؛ «مجموعه من» او به‌صورت
+      // idempotent در اولین /api/auth/me بوت‌استرپ می‌شود (فاز D — vendor-org.ts).
       const trialEndsAt = ownerSetupOk ? null : new Date(Date.now() + 24 * 3_600_000);
       const org = ownerSetupOk
         ? null
