@@ -19,6 +19,11 @@ concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 
+# نام فایل APK — «یک‌جا» تعریف می‌شود تا با ارتقای نسخه همه‌جا هم‌گام بماند (M10)
+env:
+  APK_NAME: Vizito-v2.0.0.apk
+  APK_VERSION: '2.0.0'
+
 permissions:
   contents: read
 
@@ -101,14 +106,14 @@ jobs:
       - name: تغییر نام APK
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/release/app-release.apk dist/Vizito-v1.0.0.apk
+          cp android/app/build/outputs/apk/release/app-release.apk dist/${{ env.APK_NAME }}
           ls -lh dist
 
       - name: آپلود APK در آرتیفکت‌های اکشن
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Vizito-APK
-          path: dist/Vizito-v1.0.0.apk
+          path: dist/${{ env.APK_NAME }}
           if-no-files-found: error
 
   publish-apk:
@@ -162,13 +167,13 @@ jobs:
           body: |
             📱 **نسخه نصبی اندروید اپلیکیشن ویزیتو (Vizito)**
 
-            - فایل `Vizito-v1.0.0.apk` را دانلود و نصب کنید.
+            - فایل `${{ env.APK_NAME }}` را دانلود و نصب کنید.
             - برای نصب، اجازه «نصب از منابع ناشناس» را به مرورگر خود بدهید.
             - اپلیکیشن به سرور وب ویزیتو متصل می‌شود؛ آدرس سرور داخل اپ تنظیم شده است.
 
             🌐 **آدرس سرور این نسخه:** ${{ env.SERVER_URL_IN_APK }}
 
-            نسخه: 1.0.0
-          files: dist/Vizito-v1.0.0.apk
+            نسخه: ${{ env.APK_VERSION }}
+          files: dist/${{ env.APK_NAME }}
           make_latest: 'true'
           prerelease: false
